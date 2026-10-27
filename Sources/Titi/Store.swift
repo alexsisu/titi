@@ -114,6 +114,7 @@ final class Store: ObservableObject {
     @Published var activity: [String: Date] = [:]
     @Published var scannedAt = Date.distantPast
     @Published var scanning = false
+    private var detecting = false
     @Published var lastContext: CaptureContext?
 
     // popover state
@@ -231,10 +232,17 @@ final class Store: ObservableObject {
         }
     }
 
-    func detectContext() {
+    /// Which iTerm tab is in front, looked up on every popover and window open. One lookup at a time: while iTerm
+    /// is slow to answer, opening the popover again doesn't start another.
+    func detectContext(using lookup: @escaping @Sendable () -> CaptureContext? = { Discovery.frontContext() }) {
+        guard !detecting else { return }
+        detecting = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let c = Discovery.frontContext()
-            DispatchQueue.main.async { self.lastContext = c }
+            let c = lookup()
+            DispatchQueue.main.async {
+                self.lastContext = c
+                self.detecting = false
+            }
         }
     }
 
@@ -1260,7 +1268,9 @@ final class Store: ObservableObject {
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("titi-report.md")
             try? md.write(to: tmp, atomically: true, encoding: .utf8)
             let prompt = "Summarise this workday report in at most 5 short lines for a standup. Use only facts from the report."
-            let out = sh("/bin/zsh", ["-lc", "claude -p \(shellQuote(prompt)) < \(shellQuote(tmp.path))"]).trimmed
+            // exec: claude replaces the shell, so a timeout stops claude itself, not just zsh
+            let out = sh("/bin/zsh", ["-lc", "exec claude -p \(shellQuote(prompt)) < \(shellQuote(tmp.path))"],
+                         timeout: 180).trimmed
             DispatchQueue.main.async {
                 self.narrating = false
                 guard !out.isEmpty else {

@@ -18,7 +18,8 @@ dist/Titi.app/Contents/MacOS/Titi --report | claude -p "5-line summary of my day
 ```
 
 `--selftest` writes and moves notes, so it always uses a fresh scratch folder (or an empty `TITI_NOTES_DIR`) and
-refuses a folder that already has notes. It never saves settings.
+refuses a folder that already has notes. It never saves settings. It exits 0 when every check passes, 1 when one
+fails and 2 when it refuses the folder.
 
 Needs only the Xcode Command Line Tools (Swift 6, macOS 14+). The app is ad-hoc signed: the first iTerm action makes
 macOS ask for permission to control iTerm2, and a rebuilt app may ask again.

@@ -7,8 +7,7 @@ if CommandLine.arguments.contains("--selftest") {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("titi-selftest-" + UUID().uuidString)
         setenv("TITI_NOTES_DIR", tmp.path, 1)
     }
-    SelfTest.run()
-    exit(0)
+    exit(SelfTest.run())
 }
 
 // `Titi --make-iconset <dir>` draws the app icon's PNGs for scripts/package.sh.

@@ -100,25 +100,71 @@ enum NotesFS {
 
     /// Every open todo. Files in done/, removed/ and reports/ are skipped.
     static func loadAll() -> [Note] {
-        files(skipping: notTodos).flatMap { parse($0.url, rel: $0.rel) }
+        load(skipping: notTodos, closed: false)
     }
 
     /// Every done or removed line, wherever its file ended up (live folders, done/ or removed/).
     static func loadClosed() -> [Note] {
-        files(skipping: ["reports"]).flatMap { parse($0.url, rel: $0.rel, closed: true) }
+        load(skipping: ["reports"], closed: true)
     }
 
-    private static func files(skipping skip: [String]) -> [(url: URL, rel: String)] {
-        guard let e = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey],
+    /// A file as it was when titi read it: the same modification date, size and inode mean the same content.
+    private struct Stamp: Equatable {
+        let modified: Date?
+        let size: Int?
+        let inode: UInt64?
+    }
+
+    /// The notes parsed from each file, for open todos and for closed lines, so a reload (every popover open) only
+    /// parses the files that changed. It holds just the files the latest pass saw. `cacheLock` guards both vars.
+    nonisolated(unsafe) private static var cache: [Bool: [String: (stamp: Stamp, notes: [Note])]] = [:]
+    nonisolated(unsafe) private static var cacheRoot = ""
+    private static let cacheLock = NSLock()
+
+    private static func load(skipping skip: [String], closed: Bool) -> [Note] {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if cacheRoot != root.path {   // Settings moved the notes: nothing read before applies
+            cache = [:]
+            cacheRoot = root.path
+        }
+        let before = cache[closed] ?? [:]
+        var seen: [String: (stamp: Stamp, notes: [Note])] = [:]
+        var out: [Note] = []
+        for f in files(skipping: skip) {
+            let kept = before[f.url.path].flatMap { $0.stamp == f.stamp && f.stamp.modified != nil ? $0.notes : nil }
+            let notes = kept ?? parse(f.url, rel: f.rel, closed: closed)
+            seen[f.url.path] = (f.stamp, notes)
+            out += notes
+        }
+        cache[closed] = seen
+        return out
+    }
+
+    private static func files(skipping skip: [String]) -> [(url: URL, rel: String, stamp: Stamp)] {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .contentModificationDateKey, .fileSizeKey, .fileIdentifierKey]
+        let dir = root
+        guard let e = fm.enumerator(at: dir, includingPropertiesForKeys: Array(keys),
                                     options: [.skipsHiddenFiles]) else { return [] }
-        var out: [(URL, String)] = []
+        // the enumerator's paths start with the folder as given or with symlinks resolved (/var → /private/var):
+        // work both out once, not twice per file as relative() does. realpath, because resolvingSymlinksInPath()
+        // turns /private/var back into /var.
+        let real = realpath(dir.path, nil).map { p in
+            defer { free(p) }
+            return String(cString: p)
+        }
+        let prefixes = Set([dir.path, real ?? dir.path].map { $0 + "/" })
+        var out: [(URL, String, Stamp)] = []
         for case let url as URL in e {
-            let rel = relative(url)
+            let path = url.path
+            let rel = prefixes.first(where: path.hasPrefix).map { String(path.dropFirst($0.count)) } ?? relative(url)
             if skip.contains(rel.split(separator: "/").first.map(String.init) ?? "") {
                 if url.hasDirectoryPath { e.skipDescendants() }
                 continue
             }
-            if url.pathExtension == "md" { out.append((url, rel)) }
+            guard url.pathExtension == "md" else { continue }
+            let v = try? url.resourceValues(forKeys: keys)
+            out.append((url, rel, Stamp(modified: v?.contentModificationDate, size: v?.fileSize, inode: v?.fileIdentifier)))
         }
         return out
     }

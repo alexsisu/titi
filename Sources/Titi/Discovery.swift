@@ -184,8 +184,9 @@ enum ITerm {
         !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
     }
 
+    /// AppleScript waits for iTerm, and the first time for your answer to "titi wants to control iTerm": a minute.
     private static func osa(_ script: String) -> String {
-        sh("/usr/bin/osascript", ["-e", script]).trimmed
+        sh("/usr/bin/osascript", ["-e", script], timeout: 60).trimmed
     }
 
     private static func quote(_ s: String) -> String {

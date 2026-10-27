@@ -88,19 +88,78 @@ func shortBranch(_ b: String) -> String {
     return b.hasPrefix(mine) ? String(b.dropFirst(mine.count)) : b
 }
 
-/// Runs a command and returns stdout (empty on failure).
+/// Runs a command and returns stdout (empty on failure). A command still running after `timeout` seconds is
+/// stopped (SIGTERM, then SIGKILL) and gives "", and so does one that writes more than `maxBytes`: a hung git, lsof
+/// or `claude -p` must never hold up a scan or a button for good.
 @discardableResult
-func sh(_ path: String, _ args: [String]) -> String {
+func sh(_ path: String, _ args: [String], timeout: TimeInterval = 10, maxBytes: Int = 8 << 20) -> String {
+    if blocksUI() { NSLog("titi: %@ runs on the main thread: the UI waits for it (up to %gs)", path, timeout) }
     let p = Process()
     p.executableURL = URL(fileURLWithPath: path)
     p.arguments = args
     let out = Pipe()
     p.standardOutput = out
     p.standardError = FileHandle.nullDevice
+    let exited = DispatchSemaphore(value: 0)
+    p.terminationHandler = { _ in exited.signal() }
     do { try p.run() } catch { return "" }
-    let data = out.fileHandleForReading.readDataToEndOfFile()
-    p.waitUntilExit()
-    return String(decoding: data, as: UTF8.self)
+    // read on another thread, so the deadline holds even while the pipe is full or stays open
+    let output = CommandOutput()
+    let readAll = DispatchSemaphore(value: 0)
+    DispatchQueue.global(qos: .utility).async {
+        output.read(out.fileHandleForReading, maxBytes: maxBytes) { if p.isRunning { p.terminate() } }
+        readAll.signal()
+    }
+    if exited.wait(timeout: .now() + timeout) == .timedOut {
+        p.terminate()
+        if exited.wait(timeout: .now() + 1) == .timedOut {
+            kill(p.processIdentifier, SIGKILL)
+            _ = exited.wait(timeout: .now() + 1)   // a process stuck in the kernel may not even die: don't wait on it
+        }
+        NSLog("titi: %@ ran over %gs and was stopped", path, timeout)
+        return ""
+    }
+    // something the command left running in the background can keep the pipe open: take what came, don't wait
+    _ = readAll.wait(timeout: .now() + 1)
+    let (data, overflowed) = output.result
+    if overflowed { NSLog("titi: %@ wrote over %d bytes; its output was dropped", path, maxBytes) }
+    return overflowed ? "" : String(decoding: data, as: UTF8.self)
+}
+
+/// True on the main thread inside its run loop, where titi draws and takes keys: a command run here freezes the UI
+/// until it returns. `--report` and the self-test call `sh` from plain main-thread code, before any run loop.
+func blocksUI() -> Bool {
+    Thread.isMainThread && RunLoop.current.currentMode != nil
+}
+
+/// What a command wrote, collected on a reader thread while `sh` waits with a deadline.
+private final class CommandOutput: @unchecked Sendable {   // `lock` guards `data` and `overflowed`
+    private let lock = NSLock()
+    private var data = Data()
+    private var overflowed = false
+
+    /// Reads to the end, or stops (calling `onOverflow`) once more than `maxBytes` came: each pass adds at least one
+    /// byte or ends the loop, so it ends. Plain read(2), which returns whatever has arrived: FileHandle's
+    /// read(upToCount:) holds on to a short chunk until the pipe closes.
+    func read(_ h: FileHandle, maxBytes: Int, onOverflow: () -> Void) {
+        var buf = [UInt8](repeating: 0, count: 1 << 16)
+        var n = Darwin.read(h.fileDescriptor, &buf, buf.count)   // > 0 bytes, 0 at the end, -1 on an error
+        while n > 0 {
+            lock.lock()
+            data.append(contentsOf: buf[..<n])
+            overflowed = data.count > maxBytes
+            let stop = overflowed
+            lock.unlock()
+            if stop { return onOverflow() }
+            n = Darwin.read(h.fileDescriptor, &buf, buf.count)
+        }
+    }
+
+    var result: (Data, Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (data, overflowed)
+    }
 }
 
 /// 'it'\''s' for a zsh -c command line.

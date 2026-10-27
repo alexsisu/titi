@@ -4,7 +4,8 @@ import Vision
 
 /// Read-only discovery report + a notes round-trip + the window's keys, in a scratch notes folder.
 enum SelfTest {
-    static func run() {
+    /// The process exit code: 0 when every check passed, 1 when any failed, 2 when it refused to run.
+    static func run() -> Int32 {
         print("notes dir:", Config.notesDir.path)
 
         let t0 = Date()
@@ -32,7 +33,7 @@ enum SelfTest {
         guard !NotesFS.everUsed() else {
             print("refusing to write test notes into \(Config.notesDir.path): it already has notes. "
                   + "Run without TITI_NOTES_DIR (a scratch folder is used) or point it at an empty folder.")
-            return
+            return 2
         }
         do {
             check(!NotesFS.everUsed(), "empty notes folder shows demo todos")
@@ -120,6 +121,8 @@ enum SelfTest {
             try movingNotes(check)
             migration(check)
             icons(check)
+            commands(check)
+            notesAtScale(check)
         } catch {
             check(false, "notes round-trip threw \(error)")
         }
@@ -130,6 +133,88 @@ enum SelfTest {
             d.set(w, forKey: "reportDigests")
         }
         print(failures == 0 ? "selftest passed" : "selftest: \(failures) failure(s)")
+        return failures == 0 ? 0 : 1
+    }
+
+    /// Commands titi runs (ps, lsof, git, osascript, claude -p) can hang: none may hold up a scan or a button for
+    /// good. Every case here is bounded even if `sh` regresses (the longest takes 5 s).
+    static func commands(_ check: (Bool, String) -> Void) {
+        func timed(_ f: () -> String) -> (String, TimeInterval) {
+            let t0 = Date()
+            let out = f()
+            return (out, Date().timeIntervalSince(t0))
+        }
+        let (slept, t1) = timed { sh("/bin/sleep", ["5"], timeout: 0.5) }
+        check(slept.isEmpty && t1 < 2.5, "a command still running after its timeout is stopped (\(String(format: "%.1f", t1))s)")
+        let (big, _) = timed { sh("/bin/sh", ["-c", "head -c 300000 /dev/zero | tr '\\0' a"]) }
+        check(big.count == 300_000, "output bigger than a pipe's buffer comes back whole (\(big.count) bytes)")
+        let (flood, t2) = timed { sh("/bin/sh", ["-c", "head -c 3000000 /dev/zero"], maxBytes: 100_000) }
+        check(flood.isEmpty && t2 < 2.5, "output past the cap is dropped, not kept (\(flood.count) bytes, \(String(format: "%.1f", t2))s)")
+        let (hi, t3) = timed { sh("/bin/sh", ["-c", "sleep 3 & echo hi"]) }
+        check(hi.trimmed == "hi" && t3 < 2, "a background child holding the output doesn't block (\(String(format: "%.1f", t3))s)")
+        check(sh("/nonexistent/tool", []).isEmpty, "a missing command gives an empty answer")
+
+        // a command run from the UI's run loop freezes titi until it returns, so sh() logs a warning there
+        check(!blocksUI(), "plain main-thread code (--report, the self-test) doesn't count as blocking the UI")
+        let fromBackground = Counter()
+        let ran = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            if blocksUI() { fromBackground.add() }
+            ran.signal()
+        }
+        ran.wait()
+        check(fromBackground.value == 0, "…nor does a background thread")
+        let fromRunLoop = Counter()
+        DispatchQueue.main.async { if blocksUI() { fromRunLoop.add() } }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        check(fromRunLoop.value == 1, "…but main-thread code called by the run loop does, so sh() warns there")
+
+        // the front iTerm tab is looked up on every popover open: a slow lookup must not stack up behind itself
+        let s = Store(persist: false)
+        let calls = Counter()
+        let slow: @Sendable () -> CaptureContext? = {
+            calls.add()
+            Thread.sleep(forTimeInterval: 0.3)
+            return nil
+        }
+        s.detectContext(using: slow)
+        s.detectContext(using: slow)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        s.detectContext(using: slow)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        check(calls.value == 2, "one front-tab lookup at a time; the next starts once it is done (\(calls.value) ran)")
+    }
+
+    /// Every popover open rereads the notes on the main thread, and done/ and removed/ only grow: a reload must cost
+    /// about what changed, not the whole history. Runs last, in a folder of its own inside the scratch notes.
+    static func notesAtScale(_ check: (Bool, String) -> Void) {
+        let fm = FileManager.default
+        let dir = Config.notesDir.appendingPathComponent("done/scale", isDirectory: true)
+        defer { try? fm.removeItem(at: dir) }
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        func note(_ text: String) -> String { "---\ngroup: scale\n---\n- [x] \(text) ✅ 2026-10-01 10:00\n" }
+        for i in 0..<2000 { try? note("old \(i)").write(to: dir.appendingPathComponent("n\(i).md"), atomically: false, encoding: .utf8) }
+        func seconds(_ f: () -> Void) -> TimeInterval {
+            let t0 = Date()
+            f()
+            return Date().timeIntervalSince(t0)
+        }
+        let first = seconds { _ = NotesFS.loadClosed() }
+        let again = seconds { _ = NotesFS.loadClosed() }
+        check(again < first / 4, String(format: "rereading 2,000 unchanged notes costs under a quarter of the first read (%.0f → %.0f ms)",
+                                         first * 1000, again * 1000))
+        try? note("new 7").write(to: dir.appendingPathComponent("n7.md"), atomically: true, encoding: .utf8)
+        let closed = NotesFS.loadClosed()
+        check(closed.contains { $0.text == "new 7" } && !closed.contains { $0.text == "old 7" },
+              "a note edited since the last read is read again")
+    }
+
+    /// Counts calls from any thread.
+    final class Counter: @unchecked Sendable {   // `lock` guards `n`
+        private let lock = NSLock()
+        private var n = 0
+        func add() { lock.lock(); n += 1; lock.unlock() }
+        var value: Int { lock.lock(); defer { lock.unlock() }; return n }
     }
 
     /// Design 1c: the menu-bar glyph and the app icon's PNGs (drawn into a scratch folder).
