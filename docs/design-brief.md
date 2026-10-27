@@ -42,7 +42,8 @@ selected row and the timer.
 
 ### 1. Menu-bar icon
 
-- At rest: a dotted circle with the number of open "I was about to…" notes.
+- At rest: a ring with a dot in the middle ("you are here", design 1c), with the number of open "I was about to…"
+  notes. The app icon is the same mark in cream on a green tile.
 - During a focus block: `● 17m` in red, pulsing. Paused: `⏸ 12m` in orange.
 - A click opens the tray.
 

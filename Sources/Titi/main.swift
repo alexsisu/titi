@@ -11,6 +11,17 @@ if CommandLine.arguments.contains("--selftest") {
     exit(0)
 }
 
+// `Titi --make-iconset <dir>` draws the app icon's PNGs for scripts/package.sh.
+if let i = CommandLine.arguments.firstIndex(of: "--make-iconset"), i + 1 < CommandLine.arguments.count {
+    do {
+        try TitiIcon.writeIconset(to: URL(fileURLWithPath: CommandLine.arguments[i + 1], isDirectory: true))
+        exit(0)
+    } catch {
+        FileHandle.standardError.write("could not draw the icon: \(error)\n".data(using: .utf8)!)
+        exit(1)
+    }
+}
+
 // `Titi --report [YYYY-MM-DD]` prints that workday's report (try `| claude -p "5-line summary"`).
 if let i = CommandLine.arguments.firstIndex(of: "--report") {
     Report.printCLI(CommandLine.arguments.dropFirst(i + 1).first)

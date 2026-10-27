@@ -112,9 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         switch f.mode {
         case .idle:
-            let img = NSImage(systemSymbolName: "circle.dotted", accessibilityDescription: "titi")
-            img?.isTemplate = true
-            b.image = img
+            b.image = TitiIcon.menuBarGlyph
             let n = store.aboutNotes.count
             b.attributedTitle = NSAttributedString(string: n > 0 ? " \(n)" : "", attributes: [.font: font])
             setPulse(false)

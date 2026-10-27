@@ -42,7 +42,7 @@ Folders with a live Claude or Codex session, or with a todo, show up on their ow
 
 ## What it does
 
-- **Menu bar icon:** a dotted circle with the number of open "I was about to…" notes. While focusing it shows `● 17m` in
+- **Menu bar icon:** a ring with a dot in the middle ("you are here"), with the number of open "I was about to…" notes. While focusing it shows `● 17m` in
   red and pulses. When paused it shows `⏸ 12m` in orange.
 - **Active items** (the popover's first tab):
   - Type in the filter box to narrow the list. Use ↑↓ to move, → to open a folder, ← to close it, and ↩ to toggle a

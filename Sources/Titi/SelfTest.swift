@@ -119,6 +119,7 @@ enum SelfTest {
             windowKeys(check)
             try movingNotes(check)
             migration(check)
+            icons(check)
         } catch {
             check(false, "notes round-trip threw \(error)")
         }
@@ -129,6 +130,33 @@ enum SelfTest {
             d.set(w, forKey: "reportDigests")
         }
         print(failures == 0 ? "selftest passed" : "selftest: \(failures) failure(s)")
+    }
+
+    /// Design 1c: the menu-bar glyph and the app icon's PNGs (drawn into a scratch folder).
+    static func icons(_ check: (Bool, String) -> Void) {
+        let glyph = TitiIcon.menuBar()
+        check(glyph.isTemplate && glyph.size == NSSize(width: 18, height: 18), "the menu-bar glyph is an 18 pt template image")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("titi-selftest-icon-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        do {
+            try TitiIcon.writeIconset(to: dir)
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()) ?? []
+            let sizes = names.compactMap { n -> Int? in
+                guard let src = CGImageSourceCreateWithURL(dir.appendingPathComponent(n) as CFURL, nil),
+                      let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+                return img.width
+            }
+            check(names.count == 10 && Set(sizes) == [16, 32, 64, 128, 256, 512, 1024], "the iconset has all 10 sizes (\(sizes))")
+        } catch {
+            check(false, "the iconset could not be drawn: \(error)")
+        }
+        // pixels of the 1024 master: transparent corner, green tile, cream ring, green gap, cream dot
+        guard let img = TitiIcon.appIcon(pixels: 1024, points: 512), let data = img.dataProvider?.data,
+              let p = CFDataGetBytePtr(data) else { return check(false, "the app icon could not be drawn") }
+        func px(_ x: Int, _ y: Int) -> [UInt8] { let o = y * img.bytesPerRow + x * 4; return [p[o], p[o + 1], p[o + 2], p[o + 3]] }
+        check(px(20, 20)[3] == 0 && px(150, 512) == [0x2f, 0x5d, 0x50, 255] && px(512 + 236, 512) == [0xf3, 0xf1, 0xec, 255]
+              && px(512 + 160, 512) == [0x2f, 0x5d, 0x50, 255] && px(512, 512) == [0xf3, 0xf1, 0xec, 255],
+              "the app icon is the cream ring and dot on the green tile, transparent outside it")
     }
 
     /// The rename from clomodoro: old settings come over once, without overwriting. One throwaway domain only.
