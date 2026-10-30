@@ -99,7 +99,9 @@ Folders with a live Claude or Codex session, or with a todo, show up on their ow
       Space and ⌫ act on all of them, and one ⌘Z undoes it all. **⌘A** selects every todo in the list
       (every line in the Logbook). Esc or a plain ↑↓ drops the selection.
     - **⌘K** (or Space) marks a todo done, or reopens a closed one.
-    - **⌫** removes a todo after a confirmation box.
+    - **⌫** removes a todo after a confirmation box. In the Logbook, **⌫** deletes a done or removed line for
+      good, after its own confirmation: the line is erased from its file, and a file left with nothing else in it
+      is deleted. There's no ⌘Z for that.
     - **⌘Z** undoes done, remove and reopen.
     - **↩** edits a todo, and **⌘↩** starts a focus block on it.
     - **⌘L** jumps to search.

@@ -144,7 +144,7 @@ struct ThingsList: View {
             HStack {
                 FocusPill()
                 Spacer()
-                Text("⌘N new · ⌘K done · ⌫ remove · ⇧↑↓ / ⌘-click / ⌘A select · ⌘Z undo · ↩ edit · ⌘↩ focus · ⌘O tray")
+                Text("⌘N new · ⌘K done · ⌫ remove (Logbook: delete) · ⇧↑↓ / ⌘-click / ⌘A select · ⌘Z undo · ↩ edit · ⌘↩ focus · ⌘O tray")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 14).padding(.vertical, 7)

@@ -17,7 +17,7 @@ struct AppWindowView: View {
                 FocusPill()
             }
             .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 4)
-            Text("Tab search → sidebar → list · ← back · ⌘N new · ⌘K done · ⌫ remove · ⇧↑↓ / ⌘-click / ⌘A select · ⌘Z undo · ⌘↩ focus · ⌘S report · ⌘O")
+            Text("Tab search → sidebar → list · ← back · ⌘N new · ⌘K done · ⌫ remove (Logbook: delete) · ⇧↑↓ / ⌘-click / ⌘A select · ⌘Z undo · ⌘↩ focus · ⌘S report · ⌘O")
                 .font(.caption2).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14).padding(.bottom, 7)
@@ -507,24 +507,32 @@ struct ReportView: View {
 struct ConfirmRemoveBox: View {
     @EnvironmentObject var store: Store
     let notes: [Note]
+    /// Logbook lines (done or removed) are deleted for good; open todos are only marked removed.
+    var forGood: Bool { notes.allSatisfy { $0.state != .open } }
 
     var body: some View {
         ZStack(alignment: .top) {
             Color.black.opacity(0.25)
                 .onTapGesture { store.confirmRemove = [] }
             VStack(alignment: .leading, spacing: 8) {
-                Text(notes.count == 1 ? "Remove this todo?" : "Remove these \(notes.count) todos?").font(.headline)
+                if forGood {
+                    Text(notes.count == 1 ? "Delete this entry for good?" : "Delete these \(notes.count) entries for good?").font(.headline)
+                } else {
+                    Text(notes.count == 1 ? "Remove this todo?" : "Remove these \(notes.count) todos?").font(.headline)
+                }
                 ForEach(notes.prefix(6)) { n in Text("“\(n.text)”").lineLimit(2) }
                 if notes.count > 6 { Text("…and \(notes.count - 6) more").foregroundStyle(.secondary) }
-                Text("Each line becomes “- [-] …”, and a file with nothing open left moves to removed/. Nothing is erased; ⌘Z brings them back.")
+                Text(forGood
+                     ? "Each line is erased from its Markdown file, and a file left with nothing else in it is deleted. This can't be undone."
+                     : "Each line becomes “- [-] …”, and a file with nothing open left moves to removed/. Nothing is erased; ⌘Z brings them back.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Spacer()
                     Button("Cancel  esc") { store.confirmRemove = [] }
-                    Button("Remove  ↩") {
+                    Button(forGood ? "Delete  ↩" : "Remove  ↩") {
                         store.confirmRemove = []
-                        store.removeTodos(notes)
+                        store.confirmedRemove(notes)
                     }
                     .buttonStyle(.borderedProminent).tint(.red)
                 }

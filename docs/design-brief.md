@@ -20,7 +20,8 @@ Everything is keyboard-first. The mouse works everywhere, but every action has a
   no tags, due dates, priorities or nesting. Editing the files in a text editor is normal and expected.
 - Time comes from git, the sessions and the focus log, never from scheduling.
 - Every view should answer "where was I?" or "what did I do?" at a glance.
-- Nothing is ever deleted. "Remove" marks a line `- [-]`, and finished files move to `done/` or `removed/`.
+- Nothing is deleted unless you ask. "Remove" marks a line `- [-]`, and finished files move to `done/` or
+  `removed/`. Only ⌫ in the Logbook deletes, after a confirmation that says it can't be undone.
 
 **Vocabulary:**
 
@@ -189,7 +190,7 @@ One section, **Notes folder**: the current path, **Choose…** and **Show in Fin
 | ↩ on a todo | Edit it inline (esc cancels) |
 | ⌘N | New todo at the top of the list, filed into the selected folder or list (or General). ↩ saves and starts another; esc stops |
 | ⌘K or Space | Done; on a closed line, reopen |
-| ⌫ or ⌘⌫ | Remove, after a confirmation |
+| ⌫ or ⌘⌫ | Remove, after a confirmation. In the Logbook: delete the line for good, after a confirmation (no ⌘Z) |
 | ⌘Z | Undo done, remove or reopen (a batch undoes as one step) |
 | ⌘↩ | Start a focus block on the todo |
 | ⇧↑↓, ⇧Page, ⇧Home/End, ⇧-click | Select a range |

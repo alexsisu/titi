@@ -576,6 +576,38 @@ enum SelfTest {
         _ = s.handleAppKey(key(6, "z", .command), textEditing: false)
         check(s.closed.filter { $0.group == "pair" }.count == 2, "…and one ⌘Z closes both again")
 
+        // ⌫ in the Logbook deletes for good, after asking: the line leaves its file, and a file left empty goes
+        func pairRows() -> [String] {
+            s.listRows().filter { if case .closed(let n) = $0 { return n.group == "pair" }; return false }.map(\.id)
+        }
+        s.clearSelection()
+        s.cursor = pairRows().first
+        _ = s.handleAppKey(back, textEditing: false)
+        check(s.confirmRemove.count == 1 && s.confirmRemove.allSatisfy { $0.state != .open },
+              "⌫ on a Logbook line asks before deleting it")
+        _ = s.handleAppKey(key(53), textEditing: false)
+        check(s.confirmRemove.isEmpty && pairRows().count == 2, "esc keeps it")
+        _ = s.handleAppKey(back, textEditing: false)
+        _ = s.handleAppKey(ret, textEditing: false)
+        let pairDone = s.closed.first { $0.group == "pair" }?.file
+        let pairLeft = pairDone.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+        check(pairRows().count == 1 && pairLeft.components(separatedBy: "\n").filter { $0.hasPrefix("- [") }.count == 1,
+              "↩ erases that one line from its file; the other line stays")
+        s.cursor = pairRows().first
+        _ = s.handleAppKey(back, textEditing: false)
+        _ = s.handleAppKey(ret, textEditing: false)
+        check(pairRows().isEmpty && pairDone.map { !FileManager.default.fileExists(atPath: $0.path) } == true,
+              "deleting the last line of a file deletes the file")
+        let mixed = Config.notesDir.appendingPathComponent("with my own text.md")
+        try? "- [x] erase me ✅ 2026-10-01 10:00\nsome notes of mine\n".write(to: mixed, atomically: true, encoding: .utf8)
+        s.reloadNotes()
+        s.cursor = s.closed.first { $0.text == "erase me" }.map { "c:" + $0.id }
+        _ = s.handleAppKey(back, textEditing: false)
+        _ = s.handleAppKey(ret, textEditing: false)
+        let mixedLeft = (try? String(contentsOf: mixed, encoding: .utf8)) ?? ""
+        check(mixedLeft.contains("some notes of mine") && !mixedLeft.contains("erase me"),
+              "a file with text of your own stays; only the line goes")
+
         // the quick note: straight into the todo box; Tab goes to "Project" and back, never typing a tab
         let cap = CaptureModel(store: s, fromEnd: false, context: nil)
         check(cap.startField == .notes && cap.target.group == "General", "⌥⌘N starts in the todo box, project General")

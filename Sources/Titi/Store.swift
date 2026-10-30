@@ -901,7 +901,7 @@ final class Store: ObservableObject {
             if key == 36 || key == 76 {
                 let ns = confirmRemove
                 confirmRemove = []
-                removeTodos(ns)
+                confirmedRemove(ns)
             } else if key == 53 {
                 confirmRemove = []
             }
@@ -1113,9 +1113,26 @@ final class Store: ObservableObject {
         }
     }
 
-    /// ⌫ asks first, and only for todos you picked.
+    /// ⌫ asks first, and only for todos you picked: open ones are removed; in the Logbook, closed ones are deleted.
     func askRemove() {
-        confirmRemove = pickedNotes().open
+        let p = pickedNotes()
+        confirmRemove = p.open.isEmpty ? p.closed : p.open
+    }
+
+    /// The confirmation box said yes: remove open todos, delete closed lines for good.
+    func confirmedRemove(_ ns: [Note]) {
+        if ns.allSatisfy({ $0.state != .open }) { deleteForGood(ns) } else { removeTodos(ns) }
+    }
+
+    /// Erases done or removed lines from their files (NotesFS.erase). There's no ⌘Z for this: the box said so.
+    func deleteForGood(_ cs: [Note]) {
+        clearSelection()
+        guard !cs.isEmpty else { return }
+        keepPlace {
+            let n = cs.filter { (try? NotesFS.erase($0)) == true }.count
+            reloadNotes()
+            say(n == 1 ? "Deleted for good" : "\(n) deleted for good")
+        }
     }
 
     // MARK: creating and editing

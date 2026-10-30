@@ -297,6 +297,25 @@ enum NotesFS {
         return o
     }
 
+    /// Deletes a done or removed line for good (⌫ in the Logbook, after asking). A file left with nothing but its
+    /// front matter is deleted too; one with any text of yours stays. Returns false when the line is gone already.
+    @discardableResult
+    static func erase(_ c: Note) throws -> Bool {
+        guard c.state != .open, let url = c.file, let remembered = c.line, let raw = c.raw else { return false }
+        var lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
+        guard let i = remembered < lines.count && lines[remembered] == raw ? remembered : lines.firstIndex(of: raw)
+        else { return false }
+        lines.remove(at: i)
+        var body = 0
+        if lines.first == "---", let end = lines.dropFirst().firstIndex(of: "---") { body = end + 1 }
+        if lines[body...].allSatisfy({ $0.trimmed.isEmpty }) {
+            try fm.removeItem(at: url)
+        } else {
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+        return true
+    }
+
     /// Rewrites one todo's text, keeping it open.
     static func edit(_ n: Note, to text: String) throws {
         guard let url = n.file, let remembered = n.line else { return }
