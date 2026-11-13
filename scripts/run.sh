@@ -4,8 +4,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 scripts/package.sh
-pkill -x Titi 2>/dev/null || true
+pkill -x Titi 2>/dev/null || true   # titi quits properly on SIGTERM: an open editor is saved first
 pkill -x Clomodoro 2>/dev/null || true   # the old name
+for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x Titi >/dev/null || break; sleep 0.5; done
+if pgrep -x Titi >/dev/null; then pkill -9 -x Titi || true; fi   # still there after 5 s
 # the binary inside the bundle, so it reads the same settings as the app opened from Finder
 nohup dist/Titi.app/Contents/MacOS/Titi >> "$HOME/Library/Logs/titi.log" 2>&1 &
 disown

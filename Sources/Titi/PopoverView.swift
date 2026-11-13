@@ -167,7 +167,14 @@ struct AboutRow: View {
                 (toolText(note.filedUnder) + Text(note.branch.map { " · " + shortBranch($0) } ?? "")
                     + Text(" · " + ago(note.created)))
                     .font(.caption2).foregroundColor(.orange).lineLimit(1)
-                if store.editingID == note.id { EditField() } else { Text(note.text) }
+                if store.editingID == note.id {
+                    EditField()
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text(note.text)
+                        if !note.details.isEmpty { DetailsGlyph(details: note.details) }   // the tray only shows that there are some
+                    }
+                }
             }
             Spacer(minLength: 4)
             if note.isDemo { DemoTag() }
@@ -236,6 +243,7 @@ struct TaskRow: View {
             } else {
                 (Text(note.isAbout ? "⏯ " : "") + hlText(note.text, store.queryLower)
                     + Text(note.branch.map { "  " + shortBranch($0) } ?? "").font(.caption).foregroundColor(.secondary))
+                if !note.details.isEmpty { DetailsGlyph(details: note.details) }
             }
             Spacer(minLength: 4)
             if note.isDemo { DemoTag() }

@@ -17,6 +17,7 @@ struct Note: Identifiable, Hashable {
     var state = State.open
     var closedAt: Date? = nil  // from the ✅ / ❌ stamp; nil when it was ticked outside titi
     var raw: String? = nil     // the closed line exactly as written, to find it again
+    var details = ""           // the indented lines under it, indent taken off; "" when there are none
 }
 
 /// Notes are plain Markdown: one file per capture, one `- [ ]` line per todo.
@@ -85,8 +86,8 @@ enum NotesFS {
         if !capturedIn.isEmpty { s += "captured_in: \(capturedIn)\n" }
         if let focus { s += "focus: \(focus)\n" }
         s += "---\n"
-        if let about { s += "- [ ] \(aboutPrefix)\(about)\n" }
-        for item in items { s += "- [ ] \(item)\n" }
+        if let about { s += "- [ ] \(aboutPrefix)\(oneLine(about))\n" }
+        for item in items { s += "- [ ] \(oneLine(item))\n" }
         try s.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
@@ -218,7 +219,8 @@ enum NotesFS {
             notes.append(Note(id: url.path + "#\(i)", text: t, group: group,
                               filedUnder: meta["filed_under"] ?? group, branch: meta["branch"],
                               created: created, isAbout: about, file: url, line: i, tty: meta["tty"],
-                              state: state, closedAt: closedAt, raw: closed ? line : nil))
+                              state: state, closedAt: closedAt, raw: closed ? line : nil,
+                              details: details(lines, after: i)))
         }
         return notes
     }
@@ -232,6 +234,65 @@ enum NotesFS {
             ?? dayFormat.date(from: stamp).map { $0.addingTimeInterval(12 * 3600) }
         return (String(t[..<r.lowerBound]), date)
     }
+
+    // MARK: details
+
+    /// Where a todo's details end. They are the indented lines (spaces or a tab) right under its line, down to the
+    /// next line that starts at the left edge; a blank line counts only when an indented one follows it. Returns
+    /// the index just past the last detail line, `i + 1` when there are none. Reading, writing and erasing all use
+    /// this one boundary, so they always agree on what belongs to a todo.
+    static func detailsEnd(_ lines: [String], after i: Int) -> Int {
+        var end = i + 1
+        var j = i + 1
+        while j < lines.count {
+            let l = lines[j]
+            if l.trimmed.isEmpty {
+                j += 1
+                continue
+            }
+            guard l.hasPrefix(" ") || l.hasPrefix("\t") else { break }
+            j += 1
+            end = j
+        }
+        return end
+    }
+
+    /// A todo's details as you see them: each line with its indent (a tab, or up to two spaces) taken off.
+    static func details(_ lines: [String], after i: Int) -> String {
+        lines[(i + 1)..<detailsEnd(lines, after: i)].map(unindent).joined(separator: "\n")
+    }
+
+    private static func unindent(_ l: String) -> String {
+        if l.trimmed.isEmpty { return "" }
+        if l.hasPrefix("\t") { return String(l.dropFirst()) }
+        return String(l.dropFirst(l.hasPrefix("  ") ? 2 : 1))
+    }
+
+    /// Details as written under the line: two spaces in, blank lines left empty, none before or after the block.
+    static func detailLines(_ details: String) -> [String] {
+        var ls = details.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\u{2028}", with: "\n")
+            .components(separatedBy: "\n")
+        while ls.first?.trimmed.isEmpty == true { ls.removeFirst() }
+        while ls.last?.trimmed.isEmpty == true { ls.removeLast() }
+        return ls.map { $0.trimmed.isEmpty ? "" : "  " + $0 }
+    }
+
+    /// A todo's text as one line: a line break typed or pasted into it becomes a space, so nothing lands at the left
+    /// edge between the todo and its details.
+    static func oneLine(_ text: String) -> String {
+        text.components(separatedBy: .newlines).joined(separator: " ")
+    }
+
+    /// What `details` reads back as once written.
+    static func normalizedDetails(_ details: String) -> String {
+        detailLines(details).map(unindent).joined(separator: "\n")
+    }
+
+    /// Another app (Sublime) changed a todo's details after titi read them. `onDisk` is what the file says now.
+    struct DetailsChanged: Error { let onDisk: String }
+
+    /// The todo's line isn't in its file any more (edited or deleted elsewhere): nothing was written.
+    struct LineGone: Error {}
 
     /// Ticks the line ("- [x] task ✅ 2026-10-25 14:32"); a file with nothing left open moves to done/.
     /// Returns the closed line, for undo.
@@ -297,15 +358,18 @@ enum NotesFS {
         return o
     }
 
-    /// Deletes a done or removed line for good (⌫ in the Logbook, after asking). A file left with nothing but its
-    /// front matter is deleted too; one with any text of yours stays. Returns false when the line is gone already.
+    /// Deletes a done or removed line and its details for good (⌫ in the Logbook, after asking). A file left with
+    /// nothing but its front matter is deleted too; one with any text of yours stays. Returns false when the line is
+    /// gone already. Throws DetailsChanged, deleting nothing, when its details aren't the ones titi showed you.
     @discardableResult
     static func erase(_ c: Note) throws -> Bool {
         guard c.state != .open, let url = c.file, let remembered = c.line, let raw = c.raw else { return false }
         var lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
         guard let i = remembered < lines.count && lines[remembered] == raw ? remembered : lines.firstIndex(of: raw)
         else { return false }
-        lines.remove(at: i)
+        let onDisk = details(lines, after: i)
+        guard onDisk == c.details else { throw DetailsChanged(onDisk: onDisk) }
+        lines.removeSubrange(i..<detailsEnd(lines, after: i))   // the line and its details
         var body = 0
         if lines.first == "---", let end = lines.dropFirst().firstIndex(of: "---") { body = end + 1 }
         if lines[body...].allSatisfy({ $0.trimmed.isEmpty }) {
@@ -316,15 +380,22 @@ enum NotesFS {
         return true
     }
 
-    /// Rewrites one todo's text, keeping it open.
-    static func edit(_ n: Note, to text: String) throws {
+    /// Rewrites one todo's title, keeping it open, and with `details` the indented lines under it too ("" removes
+    /// them). Details are only written over when the file still has the ones titi read (`n.details`); otherwise
+    /// nothing is written and this throws DetailsChanged. Throws LineGone when the line itself is gone.
+    static func edit(_ n: Note, to text: String, details: String? = nil) throws {
         guard let url = n.file, let remembered = n.line else { return }
         var lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
         let prefix = "- [ ] " + (n.isAbout ? aboutPrefix : "")
         let expected = prefix + n.text
         let i = remembered < lines.count && lines[remembered] == expected ? remembered : lines.firstIndex(of: expected)
-        guard let i else { return }
-        lines[i] = prefix + text
+        guard let i else { throw LineGone() }
+        if let details {
+            let onDisk = Self.details(lines, after: i)
+            if onDisk != n.details && onDisk != normalizedDetails(details) { throw DetailsChanged(onDisk: onDisk) }
+            lines.replaceSubrange((i + 1)..<detailsEnd(lines, after: i), with: detailLines(details))
+        }
+        lines[i] = prefix + oneLine(text)
         try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 

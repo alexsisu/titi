@@ -144,7 +144,7 @@ struct ThingsList: View {
             HStack {
                 FocusPill()
                 Spacer()
-                Text("⌘N new · ⌘K done · ⌫ remove (Logbook: delete) · ⇧↑↓ / ⌘-click / ⌘A select · ⌘Z undo · ↩ edit · ⌘↩ focus · ⌘O tray")
+                Text("⌘N new · ⌘K done · ⌫ remove (Logbook: delete) · ⇧↑↓ / ⌘-click / ⌘A select · ⌘Z undo · ↩ edit (Tab: details) · ⌘↩ focus · ⌘O tray")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 14).padding(.vertical, 7)
@@ -236,22 +236,31 @@ struct ThingsTodo: View {
             }
             .buttonStyle(.plain).help(closed ? "Reopen (⌘K)" : "Done (⌘K)")
             if store.editingID == note.id {
-                EditField()
+                TodoEditor()
             } else {
-                (Text(note.isAbout ? "⏯ " : "").foregroundColor(.orange) + Text(note.text))
-                    .strikethrough(note.state == .removed)
-                    .foregroundStyle(closed ? .secondary : .primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        (Text(note.isAbout ? "⏯ " : "").foregroundColor(.orange) + Text(note.text))
+                            .strikethrough(note.state == .removed)
+                            .foregroundStyle(closed ? .secondary : .primary)
+                        if !note.details.isEmpty { DetailsGlyph(details: note.details) }
+                    }
+                    if closed && store.shownDetailsID == note.id { ShownDetails(note: note) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             Text(note.group.hasPrefix("~/") ? String(note.group.dropFirst(2)) : note.group)
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 .frame(maxWidth: 260, alignment: .trailing)
             if closed, let at = note.closedAt {
                 Text(Report.hm.string(from: at)).font(.caption).foregroundStyle(.tertiary)
+            } else if !closed {
+                Text(ago(note.created)).font(.caption).foregroundStyle(.tertiary)   // how old it is: "12d"
+                    .frame(width: 30, alignment: .trailing)
             }
         }
         .font(.system(size: 13))
         .padding(.horizontal, 10).padding(.vertical, 8)
-        .onTapGesture(count: 2) { if !closed { store.beginEdit(note) } }
+        .onTapGesture(count: 2) { closed ? store.toggleDetails(note) : store.beginEdit(note) }
     }
 }

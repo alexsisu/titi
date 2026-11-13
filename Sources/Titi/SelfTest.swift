@@ -123,6 +123,11 @@ enum SelfTest {
             icons(check)
             commands(check)
             notesAtScale(check)
+            thingsRowAge(check)
+            try todoDetails(check)
+            detailsKeys(check)
+            detailsCaret(check)
+            detailsOnScreen(check)
         } catch {
             check(false, "notes round-trip threw \(error)")
         }
@@ -183,6 +188,406 @@ enum SelfTest {
         s.detectContext(using: slow)
         RunLoop.main.run(until: Date().addingTimeInterval(0.6))
         check(calls.value == 2, "one front-tab lookup at a time; the next starts once it is done (\(calls.value) ran)")
+    }
+
+    /// The to-do list view shows how old each todo is, in light grey like the app view's "12d".
+    static func thingsRowAge(_ check: (Bool, String) -> Void) {
+        _ = NSApplication.shared
+        let n = Note(id: "age-test", text: "water the plants", group: "General", filedUnder: "General", branch: nil,
+                     created: Date().addingTimeInterval(-12 * 86400 - 600), isAbout: false, file: nil, line: nil)
+        let host = NSHostingView(rootView: ThingsTodo(note: n).environmentObject(Store(persist: false))
+            .frame(width: 600).background(Color.white))   // OCR needs it opaque
+        host.appearance = NSAppearance(named: .aqua)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 60), styleMask: [.borderless],
+                           backing: .buffered, defer: false)
+        win.contentView = host
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        host.layoutSubtreeIfNeeded()
+        let shown = recognizedText(in: host)
+        check(shown.contains("12d"), "a to-do list row shows its age in days (\(shown))")
+    }
+
+    /// Details are the indented lines under a todo. titi reads them, writes them two spaces in, keeps them with their
+    /// line through done and reopen, erases them with it, and never overwrites a block another app changed.
+    static func todoDetails(_ check: (Bool, String) -> Void) throws {
+        let dir = Config.notesDir.appendingPathComponent("detailstest", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("2026-11-13 09-00 details.md")
+        try ["---", "group: detailstest", "---",
+             "- [ ] first", "  one", "", "  two",
+             "- [ ] second", "\tthree", "",
+             "- [x] closed one ✅ 2026-11-12 10:00", "  kept with it",
+             "plain text at the edge",
+             "- [ ] third", ""].joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        func open() -> [Note] { NotesFS.loadAll().filter { $0.group == "detailstest" } }
+        func closed() -> [Note] { NotesFS.loadClosed().filter { $0.group == "detailstest" } }
+        func disk(_ n: Note? = nil) -> String { (try? String(contentsOf: n?.file ?? url, encoding: .utf8)) ?? "" }
+
+        var o = open()
+        let first = o.first { $0.text == "first" }
+        check(first?.details == "one\n\ntwo",
+              "details: the indented lines under a todo, a blank line inside kept (\(first?.details.debugDescription ?? "nil"))")
+        check(o.first { $0.text == "second" }?.details == "three", "a tab indents too, and a blank line after the block isn't part of it")
+        check(o.first { $0.text == "third" }?.details == "", "a todo with nothing indented under it has no details")
+        check(o.count == 3, "details lines are never read as todos (\(o.count) open)")
+        check(closed().first { $0.text == "closed one" }?.details == "kept with it", "a Logbook line has its details too")
+
+        guard let first else { return check(false, "details: the test file didn't load") }
+        try NotesFS.edit(first, to: "first, renamed", details: "new one\n  indented\n- [ ] not a todo\n\n")
+        check(disk().contains("- [ ] first, renamed\n  new one\n    indented\n  - [ ] not a todo\n- [ ] second\n"),
+              "saving writes each detail line two spaces in, trailing blank lines dropped")
+        o = open()
+        check(o.count == 3 && o.first { $0.text == "first, renamed" }?.details == "new one\n  indented\n- [ ] not a todo",
+              "the details read back as typed, and a “- [ ]” inside them stays text")
+        if let r = o.first(where: { $0.text == "first, renamed" }) { try NotesFS.edit(r, to: r.text, details: "") }
+        check(disk().contains("- [ ] first, renamed\n- [ ] second\n"), "emptying the details removes the block")
+        if let s = open().first(where: { $0.text == "second" }) { try NotesFS.edit(s, to: "second, renamed") }
+        check(disk().contains("- [ ] second, renamed\n\tthree\n"), "a title-only edit leaves the details as they are")
+        if let s = open().first(where: { $0.text == "second, renamed" }) { try NotesFS.edit(s, to: "second,\nrenamed") }
+        check(disk().contains("- [ ] second, renamed\n\tthree\n") && open().first { $0.text == "second, renamed" }?.details == "three",
+              "a line break typed into a title becomes a space, so the details stay attached")
+
+        // another app (Sublime) changed the block after titi read it: titi must not write over it
+        let stale = open().first { $0.text == "second, renamed" }
+        try disk().replacingOccurrences(of: "\tthree\n", with: "\tthree, edited in sublime\n").write(to: url, atomically: true, encoding: .utf8)
+        var refused = false
+        if let stale {
+            do { try NotesFS.edit(stale, to: "second, renamed", details: "mine") } catch let e as NotesFS.DetailsChanged {
+                refused = e.onDisk == "three, edited in sublime"
+            }
+        }
+        check(refused && disk().contains("\tthree, edited in sublime\n") && !disk().contains("  mine"),
+              "details another app changed meanwhile are never overwritten")
+
+        for n in open() { try NotesFS.complete(n) }
+        let ticked = closed().first { $0.text == "second, renamed" }
+        check(ticked?.details == "three, edited in sublime" && ticked?.file?.path.contains("/done/") == true
+              && disk(ticked).contains("- [x] second, renamed ✅ "),
+              "ticking keeps the details under the line, and they move to done/ with the file")
+        if let ticked, let back = try NotesFS.reopen(ticked) {
+            check(back.details == "three, edited in sublime" && open().first { $0.text == "second, renamed" }?.details == "three, edited in sublime",
+                  "reopening brings the details back with the line")
+            try NotesFS.complete(back)
+        } else {
+            check(false, "reopen a line with details")
+        }
+
+        let gone = closed().first { $0.text == "closed one" }
+        if let gone { try NotesFS.erase(gone) }
+        let left = disk(closed().first)
+        check(!left.contains("kept with it") && left.contains("- [x] closed one") == false
+              && left.contains("plain text at the edge") && left.contains("\tthree, edited in sublime"),
+              "deleting a Logbook line for good erases its details and nothing after them")
+        check(ConfirmRemoveBox.explanation(for: [gone ?? first]).contains("details")
+              && !ConfirmRemoveBox.explanation(for: closed().filter { $0.details.isEmpty }).contains("details"),
+              "the delete-for-good box says the details go too, only when there are some")
+        if let c = closed().first(where: { $0.text == "second, renamed" }), let f = c.file {
+            try (try String(contentsOf: f, encoding: .utf8))
+                .replacingOccurrences(of: "\tthree, edited in sublime\n", with: "\tthree, edited in sublime\n\tand a line added later\n")
+                .write(to: f, atomically: true, encoding: .utf8)
+            var refusedErase = false
+            do { try NotesFS.erase(c) } catch is NotesFS.DetailsChanged { refusedErase = true }
+            let after = (try? String(contentsOf: f, encoding: .utf8)) ?? ""
+            check(refusedErase && after.contains("- [x] second, renamed") && after.contains("and a line added later"),
+                  "delete for good refuses a line whose details changed since titi read them")
+        }
+        try NotesFS.write(group: "flattest", filedUnder: "flattest", branch: nil, capturedIn: "test", focus: nil, about: nil,
+                          items: ["one\ntwo"])
+        let flat = NotesFS.loadAll().filter { $0.group == "flattest" }.map(\.text)
+        check(flat == ["one two"], "a new todo with a line break in it is saved as one line (\(flat))")
+
+        var secret = first
+        secret.state = .done
+        secret.closedAt = Date()
+        secret.details = "private detail"
+        let md = Report.markdown(day: workday(), open: [], closed: [secret], commits: [], focus: [])
+        check(md.contains(first.text) && !md.contains("private detail"), "the report lists titles only, never details")
+    }
+
+    /// The editor: ↩ edits the title, Tab or ↓ goes to Details, ↑ on its first line or ⇧Tab goes back, ↩ in Details
+    /// is a new line, and ⌘↩ or esc saves both. The Logbook shows details read-only. Search finds text in details.
+    static func detailsKeys(_ check: (Bool, String) -> Void) {
+        func key(_ code: UInt16, _ chars: String = "", _ mods: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: 0,
+                             context: nil, characters: chars, charactersIgnoringModifiers: chars, isARepeat: false,
+                             keyCode: code)!
+        }
+        let ret = key(36, "\r"), tab = key(48, "\t"), backTab = key(48, "\t", .shift), down = key(125), up = key(126),
+            esc = key(53), cmdRet = key(36, "\r", .command)
+        guard let url = try? NotesFS.write(group: "detailskeys", filedUnder: "detailskeys", branch: nil, capturedIn: "test",
+                                           focus: nil, about: nil, items: ["pack for the trip", "call the vet"]) else {
+            return check(false, "details keys: could not write the test note")
+        }
+        let s = Store(persist: false)
+        s.reloadNotes()
+        func note() -> Note? { s.notes.first { NotesFS.samePath($0.file, url) && $0.text == "pack for the trip" } }
+        func onDisk() -> String { note().flatMap { n in n.file.flatMap { try? String(contentsOf: $0, encoding: .utf8) } } ?? "" }
+        guard let n = note() else { return check(false, "details keys: the test note didn't load") }
+        s.select("*all")
+        s.pane = .list
+        s.cursor = "t:" + n.id
+
+        _ = s.handleAppKey(ret, textEditing: false)
+        check(s.editingID == n.id && s.editFocus == .title, "↩ edits the title first")
+        _ = s.handleAppKey(tab, textEditing: true)
+        check(s.editFocus == .details, "Tab in the title goes to Details")
+        _ = s.handleAppKey(backTab, textEditing: true)
+        check(s.editFocus == .title, "⇧Tab goes back to the title")
+        _ = s.handleAppKey(down, textEditing: true)
+        check(s.editFocus == .details, "↓ in the title goes to Details")
+        s.caretOnFirstLine = false
+        let inside = s.handleAppKey(up, textEditing: true)
+        check(!inside && s.editFocus == .details, "↑ below Details' first line just moves the caret")
+        s.caretOnFirstLine = true
+        _ = s.handleAppKey(up, textEditing: true)
+        check(s.editFocus == .title, "↑ on Details' first line goes back to the title")
+        _ = s.handleAppKey(tab, textEditing: true)
+        let newline = s.handleAppKey(ret, textEditing: true)
+        check(!newline && s.editingID == n.id, "↩ in Details is left to the editor: a new line, not save")
+        s.editDetails = "passport\nchargers"
+        _ = s.handleAppKey(esc, textEditing: true)
+        check(s.editingID == nil && note()?.details == "passport\nchargers" && onDisk().contains("- [ ] pack for the trip\n  passport\n  chargers"),
+              "esc closes the editor and keeps what you typed")
+
+        s.cursor = "t:" + (note()?.id ?? "")
+        _ = s.handleAppKey(ret, textEditing: false)
+        check(s.editDetails == "passport\nchargers", "editing again starts from the saved details")
+        s.editDetails = "passport\nchargers\numbrella"
+        _ = s.handleAppKey(cmdRet, textEditing: true)
+        check(s.editingID == nil && note()?.details == "passport\nchargers\numbrella", "⌘↩ saves and closes")
+
+        // the file changes in Sublime while the editor is open: keep what you typed, write nothing, say so
+        if let m = note() { s.beginEdit(m) }
+        let sublime = onDisk().replacingOccurrences(of: "  umbrella", with: "  umbrella, the big one")
+        if let f = note()?.file { try? sublime.write(to: f, atomically: true, encoding: .utf8) }
+        s.editDetails = "only mine"
+        s.commitEdit()
+        let both = "passport\nchargers\numbrella, the big one\n\nonly mine"
+        check(s.editingID != nil && s.editDetails == both && onDisk().contains("umbrella, the big one")
+              && !onDisk().contains("only mine") && (s.toast ?? "").contains("changed"),
+              "details changed on disk while editing: nothing is written, and the editor shows the file's version above yours")
+        s.commitEdit()
+        check(s.editingID == nil && note()?.details == both, "saving then keeps what the editor shows")
+
+        s.pane = .search
+        s.appQuery = "only mine"
+        check(s.listRows().contains { if case .task(let t) = $0 { return t.text == "pack for the trip" }; return false },
+              "the app's search finds text in details")
+        s.appQuery = ""
+
+        // every other way out of the editor saves what you typed too
+        s.select("*all")
+        if let m = note() { s.beginEdit(m) }
+        s.editDetails = "typed, then ticked"
+        if let m = note() { s.complete(m) }
+        check(s.editingID == nil && s.closed.first { $0.text == "pack for the trip" }?.details == "typed, then ticked",
+              "ticking the todo you're editing saves its details first")
+        if let c = s.closed.first(where: { $0.text == "pack for the trip" }) { s.reopen(c) }
+        if let m = note() { s.beginEdit(m) }
+        s.editDetails = "half typed"
+        if let m = note() { s.beginEdit(m) }
+        check(s.editDetails == "half typed", "opening the editor that's already open keeps what you typed")
+        s.select("General")
+        check(s.editingID == nil && note()?.details == "half typed", "switching lists saves the editor")
+        s.select("*all")
+        if let m = note() { s.beginEdit(m) }
+        s.editDetails = "before the window closed"
+        s.closeEditor()
+        check(s.editingID == nil && note()?.details == "before the window closed",
+              "closing the window (or freezing the report) saves the editor")
+        if let m = note() { s.beginEdit(m) }
+        s.editDetails = "first editor"
+        if let other = s.notes.first(where: { $0.text == "call the vet" }) { s.beginEdit(other) }   // its line moved down
+        check(note()?.details == "first editor" && s.editingID == s.notes.first { $0.text == "call the vet" }?.id,
+              "opening another todo's editor saves the first one, and the second opens on its line as it is now")
+        s.closeEditor()
+
+        if let m = note() { s.beginEdit(m) }
+        s.editDetails = "saved by cmd-s"
+        let cmdS = s.handleAppKey(key(1, "s", .command), textEditing: true)
+        check(cmdS && s.editingID == nil && s.report == nil && note()?.details == "saved by cmd-s",
+              "⌘S in the editor saves the editor, and only that")
+        if let m = note() { s.beginEdit(m) }
+        s.editDetails = "saved by cmd-n"
+        s.startAdd()
+        check(s.editingID == nil && s.adding != nil && note()?.details == "saved by cmd-n", "⌘N saves the editor before the new-todo row opens")
+        _ = s.handleAppKey(esc, textEditing: true)
+
+        s.select("*all")
+        s.pane = .list
+        let vetBefore = s.notes.first { $0.text == "call the vet" }
+        if let m = note() { s.beginEdit(m) }
+        s.editDetails = "saved by cmd-n\nplus\nthree more\nlines"
+        if let v = vetBefore { s.click("t:" + v.id, []) }
+        let vetAfter = s.notes.first { $0.text == "call the vet" }
+        check(s.editingID == nil && vetAfter != nil && vetAfter?.id != vetBefore?.id && s.cursor == "t:" + (vetAfter?.id ?? ""),
+              "clicking another row saves the editor and picks that row, even though its line moved")
+
+        func editInSublime(_ from: String, _ to: String) {
+            if let f = note()?.file { try? onDisk().replacingOccurrences(of: from, with: to).write(to: f, atomically: true, encoding: .utf8) }
+        }
+        if let m = note() { s.beginEdit(m) }
+        s.editDetails = "mine, clicked away"
+        editInSublime("  lines\n", "  lines, from sublime\n")
+        if let v = s.notes.first(where: { $0.text == "call the vet" }) { s.click("t:" + v.id, []) }
+        check(s.editingID != nil && s.editDetails.contains("lines, from sublime") && s.editDetails.hasSuffix("mine, clicked away")
+              && !onDisk().contains("clicked away"),
+              "a click elsewhere when the file's details changed keeps the editor open, both versions in it, nothing written")
+        s.select("General")
+        check(s.editingID == nil && onDisk().contains("  lines, from sublime\n") && onDisk().contains("  mine, clicked away"),
+              "leaving anyway (another list, the window, quitting) saves both versions")
+        check((s.toast ?? "").contains("both"), "…and says so (\(s.toast ?? "no toast"))")
+        if let m = note() { s.beginEdit(m) }
+        s.editDetails = "typed before quitting"
+        editInSublime("  mine, clicked away\n", "  sublime again\n")
+        s.closeEditor()
+        check(s.editingID == nil && onDisk().contains("  sublime again\n") && onDisk().contains("  typed before quitting"),
+              "a conflict found on the way out keeps both versions too")
+        s.select("*all")
+
+        if let m = note() { s.complete(m) }
+        s.select("*logbook")
+        s.pane = .list
+        let row = s.listRows().first { if case .closed(let c) = $0 { return c.text == "pack for the trip" }; return false }
+        s.cursor = row?.id
+        _ = s.handleAppKey(ret, textEditing: false)
+        let shown = s.shownDetailsID
+        check(shown != nil && shown == s.closed.first { $0.text == "pack for the trip" }?.id && s.editingID == nil,
+              "↩ on a Logbook line shows its details, read-only")
+        _ = s.handleAppKey(ret, textEditing: false)
+        check(s.shownDetailsID == nil, "↩ again hides them")
+        _ = s.handleAppKey(ret, textEditing: false)
+        _ = s.handleAppKey(down, textEditing: false)
+        check(s.shownDetailsID == nil, "moving to another line hides them")
+
+        // opening and closing the editor without a change writes nothing, even for details titi would write tidier
+        let blanky = Config.notesDir.appendingPathComponent("detailskeys/blank first.md")
+        let text = "---\ngroup: detailskeys\n---\n- [ ] blank line first\n\n  then the details\n"
+        try? text.write(to: blanky, atomically: true, encoding: .utf8)
+        s.reloadNotes()
+        if let b = s.notes.first(where: { $0.text == "blank line first" }) {
+            s.beginEdit(b)
+            _ = s.handleAppKey(esc, textEditing: true)
+        }
+        check((try? String(contentsOf: blanky, encoding: .utf8)) == text, "esc with nothing changed leaves the file alone")
+
+        func vet() -> Note? { s.notes.first { NotesFS.samePath($0.file, url) && $0.text == "call the vet" } }
+        func rewrite(_ change: (inout [String]) -> Void) {
+            var ls = ((try? String(contentsOf: url, encoding: .utf8)) ?? "").components(separatedBy: "\n")
+            change(&ls)
+            try? ls.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+        s.select("*all")
+        if let v = vet() { s.beginEdit(v) }
+        s.editDetails = "followed"
+        rewrite { $0.insert("- [ ] added above in sublime", at: $0.firstIndex { $0.hasPrefix("- [") } ?? $0.count) }
+        s.reloadNotes()
+        check(s.editingID != nil && s.editingID == vet()?.id, "a reload that moves the edited todo's line keeps the editor on it")
+        s.closeEditor()
+        check(vet()?.details == "followed", "…and the save lands under it")
+        // the common Sublime edit: a todo added right above, so the todo above takes the edited one's old id
+        guard let pair = try? NotesFS.write(group: "detailskeys", filedUnder: "detailskeys", branch: nil, capturedIn: "test",
+                                            focus: nil, about: nil, items: ["first of a pair", "second of a pair"]) else {
+            return check(false, "details keys: could not write the pair")
+        }
+        s.reloadNotes()
+        func second() -> Note? { s.notes.first { NotesFS.samePath($0.file, pair) && $0.text == "second of a pair" } }
+        if let n2 = second() { s.beginEdit(n2) }
+        s.editDetails = "stays on the second"
+        var pairLines = ((try? String(contentsOf: pair, encoding: .utf8)) ?? "").components(separatedBy: "\n")
+        pairLines.insert("- [ ] new on top", at: pairLines.firstIndex(of: "- [ ] first of a pair") ?? 0)
+        try? pairLines.joined(separator: "\n").write(to: pair, atomically: true, encoding: .utf8)
+        s.reloadNotes()
+        check(s.editingID == second()?.id, "a todo added right above the edited one: the editor stays on the edited one")
+        s.closeEditor()
+        check(second()?.details == "stays on the second", "…and saves into it")
+
+        if let v = vet() { s.beginEdit(v) }
+        s.editDetails = "typed for a line that's gone"
+        let doomed = vet()
+        rewrite { ls in
+            guard let i = ls.firstIndex(of: "- [ ] call the vet") else { return }
+            ls.removeSubrange(i..<NotesFS.detailsEnd(ls, after: i))
+            ls.insert("- [ ] took its place", at: i)
+        }
+        if let d = doomed { s.complete(d) }
+        check(s.editingID == nil && s.notes.contains { $0.text == "took its place" } && !s.closed.contains { $0.text == "took its place" },
+              "ticking a todo whose line was deleted meanwhile ticks nothing else")
+    }
+
+    /// The Details box: ↑ leaves it only from its first line as drawn, and typing stays as typed (no smart quotes).
+    static func detailsCaret(_ check: (Bool, String) -> Void) {
+        _ = NSApplication.shared
+        let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: 120, height: 300))
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 300), styleMask: [.borderless],
+                           backing: .buffered, defer: false)
+        win.contentView = tv
+        tv.string = "a first paragraph long enough to wrap onto several lines\nsecond"
+        if let lm = tv.layoutManager, let tc = tv.textContainer { lm.ensureLayout(for: tc) }
+        func at(_ i: Int) -> Bool {
+            tv.setSelectedRange(NSRange(location: i, length: 0))
+            return tv.caretOnFirstLine
+        }
+        check(at(0) && at(4), "↑ leaves Details from its first line")
+        check(!at(45), "…but on the second line of a wrapped first paragraph it just moves up")
+        check(!at((tv.string as NSString).length), "…and from the last line too")
+        tv.plainTyping()
+        check(!tv.isAutomaticQuoteSubstitutionEnabled && !tv.isAutomaticDashSubstitutionEnabled && !tv.isAutomaticTextReplacementEnabled,
+              "the editors keep -- and \" as typed (details hold commands)")
+        check(!tv.isAutomaticSpellingCorrectionEnabled, "…and never autocorrect a word (a command name isn't a typo)")
+    }
+
+    /// What the rows draw: the editor with its Details box, and a Logbook line's details read-only, in both views.
+    static func detailsOnScreen(_ check: (Bool, String) -> Void) {
+        _ = NSApplication.shared
+        func drawn<V: View>(_ v: V, _ s: Store, height: CGFloat = 120) -> String {
+            let host = NSHostingView(rootView: v.environmentObject(s).frame(width: 640).background(Color.white))
+            host.appearance = NSAppearance(named: .aqua)
+            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: height), styleMask: [.borderless],
+                               backing: .buffered, defer: false)
+            win.contentView = host
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+            host.layoutSubtreeIfNeeded()
+            return recognizedText(in: host)
+        }
+        var n = Note(id: "details-ocr", text: "pack for the trip", group: "General", filedUnder: "General", branch: nil,
+                     created: Date().addingTimeInterval(-3 * 86400), isAbout: false, file: nil, line: nil)
+        n.details = "passport and chargers"
+        let s = Store(persist: false)
+        s.beginEdit(n)
+        let things = drawn(ThingsTodo(note: n), s)
+        check(things.contains("passport and chargers"), "the to-do list's editor shows the details under the title (\(things))")
+        let app = drawn(TodoRow(note: n), s)
+        check(app.contains("passport and chargers"), "the app view's editor shows them too (\(app))")
+        s.editingID = nil
+
+        var c = n
+        c.id = "details-ocr-closed"
+        c.state = .done
+        c.closedAt = Date()
+        s.shownDetailsID = c.id
+        let log = drawn(ThingsTodo(note: c), s)
+        check(log.contains("passport and chargers"), "a Logbook line in the to-do list shows its details read-only (\(log))")
+        let appLog = drawn(ClosedRow(note: c), s)
+        check(appLog.contains("passport and chargers"), "…and in the app view (\(appLog))")
+        s.shownDetailsID = nil
+        let folded = drawn(ThingsTodo(note: c), s)
+        check(!folded.contains("passport"), "folded, a row shows only its title (\(folded))")
+    }
+
+    /// The text OCR reads in a view drawn offscreen, lowercased, pieces joined with " | ".
+    static func recognizedText(in view: NSView) -> String {
+        let size = view.bounds.size
+        guard size.width > 0, size.height > 0,
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width) * 2, pixelsHigh: Int(size.height) * 2,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return "" }
+        rep.size = size
+        view.cacheDisplay(in: view.bounds, to: rep)
+        guard let cg = rep.cgImage else { return "" }
+        let req = VNRecognizeTextRequest()
+        try? VNImageRequestHandler(cgImage: cg).perform([req])
+        return (req.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " | ").lowercased()
     }
 
     /// Every popover open rereads the notes on the main thread, and done/ and removed/ only grow: a reload must cost

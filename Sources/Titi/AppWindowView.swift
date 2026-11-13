@@ -390,6 +390,102 @@ struct EditField: View {
     }
 }
 
+/// The window's todo editor: the title, and under it a Details box that grows with its text.
+/// ↩ in the title saves; Tab or ↓ goes to Details, where ↩ is a new line; ⌘↩ or esc saves both (Store.handleAppKey).
+struct TodoEditor: View {
+    @EnvironmentObject var store: Store
+    @FocusState private var focus: EditFocus?
+    private static let font = Font.system(size: 13)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("", text: $store.editText)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                .focused($focus, equals: .title)
+                .onSubmit { store.commitEdit() }
+            // an invisible copy of the text sizes the box, so it starts one line tall and grows line by line
+            Text(store.editDetails + " ")
+                .font(Self.font)
+                .padding(.horizontal, 5).padding(.vertical, 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(0)
+                .overlay(alignment: .topLeading) {
+                    ZStack(alignment: .topLeading) {
+                        if store.editDetails.isEmpty {
+                            Text("Details · Tab or ↓ · ↩ new line · ⌘↩ or esc saves")
+                                .font(Self.font).foregroundStyle(.tertiary)
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .allowsHitTesting(false)
+                        }
+                        TextEditor(text: $store.editDetails)
+                            .font(Self.font)
+                            .autocorrectionDisabled()
+                            .scrollContentBackground(.hidden)
+                            .scrollDisabled(true)
+                            .focused($focus, equals: .details)
+                    }
+                }
+                .padding(.vertical, 3)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.045)))
+        }
+        .onAppear { DispatchQueue.main.async { focus = store.editFocus } }
+        .onChange(of: store.editFocus) { _, f in focus = f }
+        .onChange(of: focus) { _, f in if let f, f != store.editFocus { store.editFocus = f } }
+    }
+}
+
+extension NSTextView {
+    /// Is the caret on the first line as drawn? A long first paragraph wraps onto several.
+    var caretOnFirstLine: Bool {
+        let caret = selectedRange().location
+        guard caret > 0 else { return true }
+        let here = firstRect(forCharacterRange: NSRange(location: caret, length: 0), actualRange: nil)
+        let top = firstRect(forCharacterRange: NSRange(location: 0, length: 0), actualRange: nil)
+        return abs(here.midY - top.midY) < 1
+    }
+
+    /// Typing stays as typed: no autocorrect, smart quotes, dashes or text replacements, so commands survive.
+    func plainTyping() {
+        isAutomaticSpellingCorrectionEnabled = false
+        isAutomaticQuoteSubstitutionEnabled = false
+        isAutomaticDashSubstitutionEnabled = false
+        isAutomaticTextReplacementEnabled = false
+    }
+}
+
+/// The small grey mark on a row with details; hovering it shows their first lines.
+struct DetailsGlyph: View {
+    let details: String
+
+    var body: some View {
+        let lines = details.components(separatedBy: "\n")
+        Image(systemName: "text.alignleft")
+            .font(.system(size: 10))
+            .foregroundStyle(.tertiary)
+            .help(lines.prefix(4).joined(separator: "\n") + (lines.count > 4 ? "\n…" : ""))
+            .accessibilityLabel("Has details")
+    }
+}
+
+/// A Logbook line's details, read-only, under its title.
+struct ShownDetails: View {
+    let note: Note
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(note.details.isEmpty ? "No details" : note.details)
+                .italic(note.details.isEmpty)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("read-only in the Logbook · ⌘K reopens it to edit").font(.caption).foregroundStyle(.tertiary)
+        }
+        .padding(.top, 3)
+    }
+}
+
 struct TodoRow: View {
     @EnvironmentObject var store: Store
     let note: Note
@@ -398,15 +494,18 @@ struct TodoRow: View {
         let selected = store.cursor.map { $0.dropFirst(2) == note.id } ?? false
         let hover = store.hoverID == "row:" + note.id
         let q = store.appQuery.trimmed.lowercased()
-        HStack(spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Button { store.complete(note) } label: { Image(systemName: "square") }
                 .buttonStyle(.plain).help("Done (⌘K)")
             if store.editingID == note.id {
-                EditField()
+                TodoEditor()
             } else {
-                (Text(note.isAbout ? "⏯ " : "").foregroundColor(.orange) + hlText(note.text, q))
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    (Text(note.isAbout ? "⏯ " : "").foregroundColor(.orange) + hlText(note.text, q))
+                        .lineLimit(2)
+                    if !note.details.isEmpty { DetailsGlyph(details: note.details) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             GroupLabel(note: note, q: q)
             Text(ago(note.created)).font(.caption).foregroundStyle(.secondary).frame(width: 50, alignment: .trailing)
@@ -442,19 +541,26 @@ struct ClosedRow: View {
         let done = note.state == .done
         let q = store.appQuery.trimmed.lowercased()
         let when = note.closedAt.map { workday($0) == workday() ? Report.hm.string(from: $0) : Self.date.string(from: $0) } ?? "—"
-        HStack(spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Button { store.reopen(note) } label: { Image(systemName: done ? "checkmark.square" : "xmark.square") }
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("Reopen (⌘K)")
-            (Text(note.isAbout ? "⏯ " : "") + hlText(note.text, q))
-                .strikethrough(!done)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    (Text(note.isAbout ? "⏯ " : "") + hlText(note.text, q))
+                        .strikethrough(!done)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    if !note.details.isEmpty { DetailsGlyph(details: note.details) }
+                }
+                if store.shownDetailsID == note.id { ShownDetails(note: note) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             GroupLabel(note: note, q: q)
             Text(when).font(.caption).foregroundStyle(.secondary).frame(width: 50, alignment: .trailing)
             Spacer().frame(width: 44)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
+        .onTapGesture(count: 2) { store.toggleDetails(note) }
     }
 }
 
@@ -509,6 +615,14 @@ struct ConfirmRemoveBox: View {
     let notes: [Note]
     /// Logbook lines (done or removed) are deleted for good; open todos are only marked removed.
     var forGood: Bool { notes.allSatisfy { $0.state != .open } }
+    /// The small print under the list of lines: what happens to them, and to their details.
+    static func explanation(for notes: [Note]) -> String {
+        guard notes.allSatisfy({ $0.state != .open }) else {
+            return "Each line becomes “- [-] …”, and a file with nothing open left moves to removed/. Nothing is erased; ⌘Z brings them back."
+        }
+        let details = notes.contains { !$0.details.isEmpty } ? " with its details" : ""
+        return "Each line is erased from its Markdown file\(details), and a file left with nothing else in it is deleted. This can't be undone."
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -522,9 +636,7 @@ struct ConfirmRemoveBox: View {
                 }
                 ForEach(notes.prefix(6)) { n in Text("“\(n.text)”").lineLimit(2) }
                 if notes.count > 6 { Text("…and \(notes.count - 6) more").foregroundStyle(.secondary) }
-                Text(forGood
-                     ? "Each line is erased from its Markdown file, and a file left with nothing else in it is deleted. This can't be undone."
-                     : "Each line becomes “- [-] …”, and a file with nothing open left moves to removed/. Nothing is erased; ⌘Z brings them back.")
+                Text(Self.explanation(for: notes))
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {

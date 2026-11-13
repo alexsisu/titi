@@ -17,7 +17,8 @@ Everything is keyboard-first. The mouse works everywhere, but every action has a
 **Ground rules (deliberate constraints):**
 
 - Plain Markdown files are the only store: one file per capture, one `- [ ]` line per todo. No database or sync, and
-  no tags, due dates, priorities or nesting. Editing the files in a text editor is normal and expected.
+  no tags, due dates, priorities or nesting. A todo's details are the lines indented under it, and titi reads them as
+  plain text, never as sub-todos. Editing the files in a text editor is normal and expected.
 - Time comes from git, the sessions and the focus log, never from scheduling.
 - Every view should answer "where was I?" or "what did I do?" at a glance.
 - Nothing is deleted unless you ask. "Remove" marks a line `- [-]`, and finished files move to `done/` or
@@ -87,7 +88,7 @@ A floating panel, like Spotlight, that takes the keyboard without pulling you ou
 
 The layout is inspired by Notational Velocity: a search bar across the top, a sidebar, and a list.
 
-- **The search bar** searches open and closed todos everywhere. Results come in two groups, *Open* and *Closed*, with
+- **The search bar** searches open and closed todos everywhere, their details included. Results come in two groups, *Open* and *Closed*, with
   matches highlighted, and a green *＋ Create "…" in General* row at the end. ↩ creates a todo only when nothing
   matches; otherwise it steps into the results.
 - **The sidebar**, top to bottom:
@@ -98,7 +99,14 @@ The layout is inspired by Notational Velocity: a search bar across the top, a si
   - a collapsible *Going quiet* group and a faint *forgotten* link.
 - **The list:**
   - Each todo is a card: checkbox, text, its folder or list (with the branch), age, an iTerm link and a ▶ focus button.
-    The link and the button are faint until you hover or select the card.
+    The link and the button are faint until you hover or select the card. A todo with details has a small grey note
+    mark after its text; hovering it shows the first lines.
+  - **Editing** (↩ or a double-click) opens the title in place with a **Details** box under it that grows with its
+    text. Tab or ↓ goes into Details, where ↩ is a new line; ↑ on its first line or ⇧Tab goes back. ↩ in the title,
+    ⌘↩, ⌘S, esc or a click on another row saves both, and so does any other way out (another list, ⌘N, closing the
+    window, quitting). Emptying Details removes them. If the file's details changed in another app while the editor
+    was open, nothing is written: the editor shows the file's version above yours, and saving writes what you see;
+    leaving without looking saves both versions.
   - The cards sit inside a light grey frame.
   - A folder's header has one chip per live session, plus "open terminal here".
 - **TODOs** is every open todo from every folder, newest first. **Logbook** shows closed todos grouped by workday ("Today · 2
@@ -115,9 +123,11 @@ The same data, laid out like Things: calmer, with no search bar.
 - **Sidebar:** TODOs and Logbook, then Folders (with session dots), then Lists.
 - **Right side:**
   - a big title with an icon and a one-line subtitle;
-  - a light grey frame holding **＋ New To-Do**, then one card per todo: a round checkbox, the text, and its folder or
-    list on the right;
-  - Logbook cards show the closing time.
+  - a light grey frame holding **＋ New To-Do**, then one card per todo: a round checkbox, the text (with the note
+    mark when it has details), its folder or list on the right, and its age in light grey ("12d");
+  - editing works as in the app view, with the same Details box;
+  - Logbook cards show the closing time. ↩ or a double-click shows a line's details read-only; ⌘K reopens it to
+    change them.
 - **Footer:** the focus status and a hint line of keys.
 - It opens on whatever folder or list was selected in the app view, otherwise on TODOs.
 
@@ -187,10 +197,11 @@ One section, **Notes folder**: the current path, **Choose…** and **Show in Fin
 | Home / End | First / last row |
 | → or ↩ in the sidebar | Into the list |
 | ← in the list | Back to the sidebar |
-| ↩ on a todo | Edit it inline (esc cancels) |
+| ↩ on a todo | Edit it inline, with Details under the title. Tab or ↓: into Details (↩ there is a new line); ⇧Tab or ↑ on its first line: back. ↩ in the title, ⌘↩ or esc saves |
+| ↩ on a Logbook line | Show or hide its details, read-only |
 | ⌘N | New todo at the top of the list, filed into the selected folder or list (or General). ↩ saves and starts another; esc stops |
 | ⌘K or Space | Done; on a closed line, reopen |
-| ⌫ or ⌘⌫ | Remove, after a confirmation. In the Logbook: delete the line for good, after a confirmation (no ⌘Z) |
+| ⌫ or ⌘⌫ | Remove, after a confirmation. In the Logbook: delete the line and its details for good, after a confirmation (no ⌘Z) |
 | ⌘Z | Undo done, remove or reopen (a batch undoes as one step) |
 | ⌘↩ | Start a focus block on the todo |
 | ⇧↑↓, ⇧Page, ⇧Home/End, ⇧-click | Select a range |
@@ -199,7 +210,8 @@ One section, **Notes folder**: the current path, **Choose…** and **Show in Fin
 | esc | Drop the selection, then leave the list |
 | ⌘S | Freeze today's report |
 
-Mouse: a click selects a row, a double-click edits it, the checkbox ticks it, and the ▶ button starts a focus block.
+Mouse: a click selects a row, a double-click edits it (on a Logbook line it shows the details), the checkbox ticks it,
+and the ▶ button starts a focus block.
 
 ## Visual language today
 

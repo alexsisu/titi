@@ -5,6 +5,8 @@ enum Tab { case active, focus, forgotten }
 
 /// Which part of the app window has the keyboard. Tab cycles search → sidebar → list.
 enum Pane { case search, sidebar, list }
+/// The window's todo editor has two fields: the title, and the Details box under it.
+enum EditFocus { case title, details }
 
 /// The window's two faces. ⌘O goes tray → app (search, views, the tray's list) → Things-style to-do list → tray.
 enum WindowMode: String { case app, things }
@@ -68,6 +70,14 @@ enum Row: Identifiable {
         }
     }
 
+    /// The todo or Logbook line on this row, if it is one.
+    var note: Note? {
+        switch self {
+        case .task(let n), .about(let n), .closed(let n): return n
+        default: return nil
+        }
+    }
+
     var navigable: Bool {
         switch self {
         case .about, .group, .task, .session, .closed, .create: return true
@@ -121,7 +131,7 @@ final class Store: ObservableObject {
     @Published var tab: Tab = .active
     @Published var query = ""
     @Published var expanded: Set<String> = []
-    @Published var cursor: String?
+    @Published var cursor: String? { didSet { if cursor != oldValue, shownDetailsID != nil { shownDetailsID = nil } } }
     @Published var popoverOpenCount = 0
     @Published var hoverID: String?
 
@@ -136,6 +146,17 @@ final class Store: ObservableObject {
     @Published var quietExpanded = false
     @Published var editingID: String?
     @Published var editText = ""
+    /// The editor's Details text, and which of its two fields has the keyboard.
+    @Published var editDetails = ""
+    @Published var editFocus = EditFocus.title
+    /// The todo as it was when the editor opened: what a save checks the file against.
+    private var editBase: Note?
+    /// The editor holds the file's changed details above yours (a save found them changed).
+    private var editMerged = false
+    /// Set by the key monitor before each key: is the caret on the first line of Details? (↑ then goes to the title)
+    var caretOnFirstLine = true
+    /// The Logbook line whose details are showing, read-only (↩ or a double-click; moving away hides them).
+    @Published var shownDetailsID: String?
     @Published var adding: String?        // ⌘N: the folder or list the inline new-todo row files into
     @Published var addText = ""
     @Published var confirmRemove: [Note] = []
@@ -209,6 +230,20 @@ final class Store: ObservableObject {
         notes = real.isEmpty && !NotesFS.everUsed() ? Self.demoNotes() : real
         closed = NotesFS.loadClosed()
         reloadFocusLog()
+        followEditor()
+    }
+
+    /// The file changed while the editor was open (Sublime added or deleted a line above): ids are path#line, so
+    /// the edited todo's old id is now another line, often another todo. Point the editor at its todo's new line,
+    /// the nearest one with its title. It keeps the details it started from, for the save's stale check.
+    private func followEditor() {
+        guard let id = editingID, let base = editBase, let line = base.line, base.file != nil,
+              notes.first(where: { $0.id == id })?.text != base.text,
+              let moved = notes.filter({ $0.file == base.file && $0.text == base.text })
+                .min(by: { abs(($0.line ?? 0) - line) < abs(($1.line ?? 0) - line) }) else { return }
+        editingID = moved.id
+        editBase?.id = moved.id
+        editBase?.line = moved.line
     }
 
     func reloadFocusLog() {
@@ -428,7 +463,8 @@ final class Store: ObservableObject {
     func reopen(_ c: Note) { reopen([c]) }
 
     /// Applies `op` to each todo, as one undo step, then rereads the files.
-    private func change(_ ns: [Note], _ message: (Int) -> String, _ op: (Note) throws -> UndoStep?) {
+    private func change(_ given: [Note], _ message: (Int) -> String, _ op: (Note) throws -> UndoStep?) {
+        let ns = savingEditor(given)
         let demo = Set(ns.filter(\.isDemo).map(\.id))
         notes.removeAll { demo.contains($0.id) }   // demo todos live only in memory
         let real = ns.filter { !$0.isDemo }
@@ -504,6 +540,15 @@ final class Store: ObservableObject {
 
     /// A click on a row: plain = just that row, ⇧ = a range from the last click, ⌘ or ⌃ = add or drop that row.
     func click(_ id: String, _ mods: NSEvent.ModifierFlags) {
+        var id = id
+        if let e = editingID, !id.hasSuffix(":" + e) {   // clicking elsewhere saves the editor
+            let clicked = listRows().first { $0.id == id }.flatMap(\.note)
+            guard commitEdit() || editingID == nil else { return }   // the file changed: stay and look first
+            if let c = clicked, !listRows().contains(where: { $0.id == id }),
+               let moved = listRows().first(where: { $0.id.prefix(2) == id.prefix(2) && $0.note?.file == c.file && $0.note?.text == c.text }) {
+                id = moved.id   // saving moved the clicked todo's line
+            }
+        }
         let nav = listRows().filter(\.navigable).map(\.id)
         if mods.contains(.shift), let a = anchor ?? cursor, let i = nav.firstIndex(of: a), let j = nav.firstIndex(of: id) {
             selection = Set(nav[min(i, j)...max(i, j)])
@@ -795,6 +840,7 @@ final class Store: ObservableObject {
     }
 
     func select(_ key: String) {
+        closeEditor()
         appSelection = key
         appQuery = ""
         cursor = nil
@@ -825,7 +871,9 @@ final class Store: ObservableObject {
 
     /// Open and closed matches everywhere, then an explicit "Create" row.
     private func searchRows(_ q: String) -> [Row] {
-        let hit = { (n: Note) in (n.text + " " + n.group + " " + (n.branch ?? "") + " " + n.filedUnder).lowercased().contains(q) }
+        let hit = { (n: Note) in
+            (n.text + " " + n.group + " " + (n.branch ?? "") + " " + n.filedUnder + " " + n.details).lowercased().contains(q)
+        }
         let open = sortedNotes.filter(hit)
         let done = closed.filter(hit).sorted { ($0.closedAt ?? .distantPast) > ($1.closedAt ?? .distantPast) }
         var out: [Row] = [.header("Open · \(open.count)")]
@@ -907,9 +955,34 @@ final class Store: ObservableObject {
             }
             return true
         }
-        if editingID != nil || adding != nil {   // the edit field and the new-todo row get everything but esc
+        if editingID != nil {   // the editor gets every key but these
+            switch key {
+            case 53:   // esc closes the editor and keeps what you typed
+                commitEdit()
+                return true
+            case 36 where cmd, 76 where cmd:
+                commitEdit()
+                return true
+            case _ where cmd && ch == "s":   // ⌘S saves the editor, not the report
+                commitEdit()
+                return true
+            case 48:   // Tab and ⇧Tab move between the title and Details; neither types a tab
+                editFocus = editFocus == .title && !mods.contains(.shift) ? .details : .title
+                return true
+            case 125 where editFocus == .title && !cmd:
+                editFocus = .details
+                return true
+            case 126 where editFocus == .details && caretOnFirstLine && !cmd:
+                editFocus = .title
+                return true
+            default:
+                return false   // ↩ in the title saves (the field's onSubmit); in Details it's a new line
+            }
+        }
+        if adding != nil {   // the new-todo row gets everything but esc
             guard key == 53 else { return false }
-            if editingID != nil { editingID = nil } else { adding = nil; addText = "" }
+            adding = nil
+            addText = ""
             return true
         }
         if report != nil, key == 53 {
@@ -1068,6 +1141,7 @@ final class Store: ObservableObject {
             case .group(let g, _)?: toggle(g.key)
             case .session(let s)?: bringTab(session: s)
             case .task(let n)?, .about(let n)?: beginEdit(n)
+            case .closed(let c)?: toggleDetails(c)
             case .create?: createFromQuery()
             default: break
             }
@@ -1079,7 +1153,9 @@ final class Store: ObservableObject {
             askRemove()
             return true
         case 53:
-            if !selection.isEmpty {
+            if shownDetailsID != nil {
+                shownDetailsID = nil
+            } else if !selection.isEmpty {
                 clearSelection()
             } else if appQuery.isEmpty {
                 pane = .sidebar
@@ -1129,9 +1205,19 @@ final class Store: ObservableObject {
         clearSelection()
         guard !cs.isEmpty else { return }
         keepPlace {
-            let n = cs.filter { (try? NotesFS.erase($0)) == true }.count
+            var n = 0, changed = 0
+            for c in cs {
+                do {
+                    if try NotesFS.erase(c) { n += 1 }
+                } catch is NotesFS.DetailsChanged {
+                    changed += 1
+                } catch {
+                    NSLog("titi: could not delete a line: \(error)")
+                }
+            }
             reloadNotes()
-            say(n == 1 ? "Deleted for good" : "\(n) deleted for good")
+            say(changed > 0 ? "\(n) deleted for good · \(changed) left alone: the details changed in the file, look again first"
+                : n == 1 ? "Deleted for good" : "\(n) deleted for good")
         }
     }
 
@@ -1139,6 +1225,7 @@ final class Store: ObservableObject {
 
     /// ⌘N: an empty row at the top of the list that files into the selected folder or list.
     func startAdd() {
+        closeEditor()
         let target = addTarget
         // the lists that show every folder stay put; the new todo appears on top of them
         if !appQuery.isEmpty || (appSelection.hasPrefix("*") && appSelection != "*all") { select(target) }
@@ -1188,26 +1275,129 @@ final class Store: ObservableObject {
         }
     }
 
-    func beginEdit(_ n: Note) {
+    func beginEdit(_ given: Note) {
+        guard editingID != given.id else { return }   // already open: keep what you've typed
+        closeEditor()                                  // another todo's editor saves first, which may move lines
+        let n = notes.first { $0.id == given.id && $0.text == given.text }
+            ?? notes.first { $0.file == given.file && $0.text == given.text } ?? given
         editText = n.text
+        editDetails = n.details
+        editFocus = .title
+        editBase = n
+        editMerged = false
+        shownDetailsID = nil
         editingID = n.id
     }
 
-    func commitEdit() {
-        defer { editingID = nil }
-        guard let id = editingID, let n = notes.first(where: { $0.id == id }) else { return }
-        let text = editText.trimmed
-        guard !text.isEmpty, text != n.text else { return }
-        if n.isDemo {
-            if let i = notes.firstIndex(where: { $0.id == id }) { notes[i].text = text }
-        } else {
-            try? NotesFS.edit(n, to: text)
-            let line = n.line
-            reloadNotes()
-            if let m = notes.first(where: { $0.file == n.file && $0.line == line }) {
-                cursor = (cursor?.hasPrefix("a:") == true ? "a:" : "t:") + m.id
-            }
+    /// Saves the title and the details (↩ in the title, ⌘↩, ⌘S, esc, or a click on another row) and closes the
+    /// editor. An empty title keeps the old one. Returns false when nothing was saved:
+    /// - another app changed the details meanwhile: nothing is written, the editor stays open and now shows the
+    ///   file's version above yours, and saving again writes what you see;
+    /// - the line is gone or the file can't be written: the editor closes and what you typed is on the clipboard.
+    @discardableResult
+    func commitEdit() -> Bool {
+        guard let id = editingID, let n = editBase ?? notes.first(where: { $0.id == id }) else {
+            editingID = nil
+            return true
         }
+        let typed = NotesFS.oneLine(editText).trimmed
+        let text = typed.isEmpty ? n.text : typed
+        let details = NotesFS.normalizedDetails(editDetails)
+        let detailsChanged = details != NotesFS.normalizedDetails(n.details)
+        guard text != n.text || detailsChanged else {
+            editingID = nil
+            return true
+        }
+        if n.isDemo {
+            if let i = notes.firstIndex(where: { $0.id == id }) {
+                notes[i].text = text
+                notes[i].details = details
+            }
+            editingID = nil
+            return true
+        }
+        var saved = true
+        do {
+            try NotesFS.edit(n, to: text, details: detailsChanged ? details : nil)
+        } catch let e as NotesFS.DetailsChanged {
+            editBase?.details = e.onDisk
+            editDetails = [e.onDisk, details].filter { !$0.isEmpty }.joined(separator: "\n\n")
+            editMerged = true
+            say("The details changed in the file meanwhile: its version is now above yours. Check, then save.")
+            return false
+        } catch is NotesFS.LineGone {
+            keepOnClipboard()
+            say("This todo changed in its file, so nothing was saved. What you typed is on the clipboard.")
+            saved = false
+        } catch {
+            NSLog("titi: could not save the edit: \(error)")
+            keepOnClipboard()
+            say("Couldn't save (\(error.localizedDescription)). What you typed is on the clipboard.")
+            saved = false
+        }
+        editingID = nil
+        editBase = nil
+        reloadNotes()
+        if saved, let m = notes.first(where: { $0.file == n.file && $0.text == text }) {
+            cursor = (cursor?.hasPrefix("a:") == true ? "a:" : "t:") + m.id
+        }
+        return saved
+    }
+
+    /// Leaves the editor for good (another list or todo, the window closing, quitting, the report, ⌘N): saves it.
+    /// When another app changed the details meanwhile, both versions are saved, the file's first, then yours.
+    /// Returns false when what you typed couldn't be written and went to the clipboard instead.
+    @discardableResult
+    func closeEditor() -> Bool {
+        guard editingID != nil else { return true }
+        let both = "The details changed in the file meanwhile: both versions are saved under the todo, the file's first."
+        let merged = editMerged
+        if commitEdit() {
+            if merged { say(both) }
+            return true
+        }
+        guard editingID != nil else { return false }   // on the clipboard
+        if commitEdit() {                               // the editor now held both versions
+            say(both)
+            return true
+        }
+        if editingID != nil {                            // changed yet again in between: don't loop
+            keepOnClipboard()
+            say("The details keep changing in the file, so nothing was saved. What you typed is on the clipboard.")
+            editingID = nil
+            editBase = nil
+        }
+        return false
+    }
+
+    /// Saves an open editor before acting on todos, so ticking, removing or reopening never drops what you typed.
+    /// Returns the todos with the edited one as it is now on disk (found by its file and the title just saved).
+    private func savingEditor(_ ns: [Note]) -> [Note] {
+        guard let id = editingID, let base = editBase else {
+            closeEditor()
+            return ns
+        }
+        let typed = NotesFS.oneLine(editText).trimmed
+        let title = typed.isEmpty ? base.text : typed
+        closeEditor()
+        let now = notes.first { $0.file == base.file && $0.text == title && $0.line == base.line }
+            ?? notes.first { $0.file == base.file && $0.text == title }
+        guard let now else { return ns }   // not saved: the old note only matches a line still saying exactly that
+        return ns.map { $0.id == id ? now : $0 }
+    }
+
+    /// The editor's title and details on the clipboard, when they couldn't be saved.
+    private func keepOnClipboard() {
+        guard persist else { return }   // the self-test never touches your clipboard
+        let details = NotesFS.normalizedDetails(editDetails)
+        let text = editText.trimmed.isEmpty ? (editBase?.text ?? "") : editText.trimmed
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(details.isEmpty ? text : text + "\n" + details, forType: .string)
+    }
+
+    /// Shows or hides a Logbook line's details (read-only; reopen it to change them).
+    func toggleDetails(_ c: Note) {
+        shownDetailsID = shownDetailsID == c.id ? nil : c.id
     }
 
     func startFocus(note: Note) {
@@ -1242,10 +1432,10 @@ final class Store: ObservableObject {
 
     /// ⌘S: today's report, saved to reports/YYYY-MM-DD.md and copied to the clipboard.
     func freezeReport() {
+        guard closeEditor() else { return }   // what you typed is on the clipboard: don't copy the report over it
         windowMode = .app   // the report lives in the app view, over whatever view you're on
         appQuery = ""
         adding = nil
-        editingID = nil
         pane = .list
         let day = workday()
         let open = notes.filter { !$0.isDemo }

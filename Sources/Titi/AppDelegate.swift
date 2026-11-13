@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var ticker: Timer?
     private var pulseTimer: Timer?
     private var keyMonitor: Any?
+    private var termSignal: DispatchSourceSignal?
     private var appWindow: NSWindow?
     private var capturePanel: CapturePanel?
     private var settingsWindow: NSWindow?
@@ -24,6 +25,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var cancellables: Set<AnyCancellable> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // `pkill` (scripts/run.sh redeploys that way) sends SIGTERM, which would skip applicationWillTerminate and
+        // drop an open editor: quit the normal way instead
+        signal(SIGTERM, SIG_IGN)
+        let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        term.setEventHandler { NSApp.terminate(nil) }
+        term.resume()
+        termSignal = term
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let b = statusItem.button {
             b.target = self
@@ -72,6 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     self.store.caretToEnd = false
                 }
                 self.store.pageHeight = w.contentView?.bounds.height ?? 600
+                if let editor = w.firstResponder as? NSTextView {
+                    editor.plainTyping()   // -- and " stay as typed: details and titles hold commands
+                    if self.store.editingID != nil { self.store.caretOnFirstLine = editor.caretOnFirstLine }   // ↑ leaves Details only from there
+                }
                 // the store first, so ⌘Z means "undo the last todo change" outside text fields
                 if self.store.handleAppKey(ev, textEditing: w.firstResponder is NSText) { return nil }
                 return self.handleEditingShortcut(ev) ? nil : ev
@@ -79,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             let cmdO = ev.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command
                 && ev.charactersIgnoringModifiers == "o"
             if let panel = self.capturePanel, ev.window === panel, let model = self.captureModel {
+                (panel.firstResponder as? NSTextView)?.plainTyping()   // quick notes are typed as typed too
                 if cmdO { return nil }   // ⌘O does nothing while you write a quick note
                 if self.handleEditingShortcut(ev) { return nil }
                 return model.handleKey(ev) ? nil : ev
@@ -184,7 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         store.query = store.appQuery
         store.cursorForTray()
         store.tab = store.appSelection == "*focus" ? .focus : .active
-        store.editingID = nil
+        store.closeEditor()
         store.adding = nil
         w.performClose(nil)
         // closing the window makes us an accessory app again; show the popover once that has settled
@@ -268,8 +281,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     func windowWillClose(_ notification: Notification) {
         if (notification.object as? NSWindow) === appWindow {
+            store.closeEditor()   // ⌘W or the red button: what you typed is saved, not left to a later quit
             NSApp.setActivationPolicy(.accessory)
         }
+    }
+
+    /// Quitting saves an open editor first.
+    func applicationWillTerminate(_ notification: Notification) {
+        NSLog("titi: quitting%@", store.editingID != nil ? ", saving the open editor" : "")
+        store.closeEditor()
     }
 
     /// Back in the window after editing a file in Sublime: read the notes again.

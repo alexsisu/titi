@@ -69,12 +69,13 @@ Folders with a live Claude or Codex session, or with a todo, show up on their ow
   - **The sidebar** shows **TODOs** and Logbook, then your folders (with a dot for a live Claude or Codex session) and
     your lists, General first.
   - **TODOs** is every open todo from every folder, newest first, each with its folder or list on the right.
-  - **The right side** shows one big-title list with round checkboxes and **+ New To-Do** on top. It opens on the
-    folder or list selected in the app, otherwise on TODOs. New todos from TODOs go into General.
+  - **The right side** shows one big-title list with round checkboxes and **+ New To-Do** on top, and each todo's
+    age in light grey ("12d"). It opens on the folder or list selected in the app, otherwise on TODOs. New todos from
+    TODOs go into General.
   - **Keys:** the same as in the app, without search. ⌘1 is TODOs and ⌘2 is the Logbook. Tab moves between the
     sidebar and the list.
 - **The app** (the first ⌘O) is laid out like Notational Velocity:
-  - **The search bar** searches open and closed todos everywhere. **↩** creates the text as a todo only when nothing
+  - **The search bar** searches open and closed todos everywhere, details included. **↩** creates the text as a todo only when nothing
     matches; otherwise it steps into the results, and **＋ Create** is the last row. New todos go into the selected
     folder or list, or into General when one of the views on top is selected.
   - **The sidebar** has these views on top:
@@ -100,10 +101,12 @@ Folders with a live Claude or Codex session, or with a todo, show up on their ow
       (every line in the Logbook). Esc or a plain ↑↓ drops the selection.
     - **⌘K** (or Space) marks a todo done, or reopens a closed one.
     - **⌫** removes a todo after a confirmation box. In the Logbook, **⌫** deletes a done or removed line for
-      good, after its own confirmation: the line is erased from its file, and a file left with nothing else in it
-      is deleted. There's no ⌘Z for that.
+      good, after its own confirmation: the line and its details are erased from its file, and a file left with
+      nothing else in it is deleted. A line whose details changed in the file since titi showed them is left alone.
+      There's no ⌘Z for that.
     - **⌘Z** undoes done, remove and reopen.
-    - **↩** edits a todo, and **⌘↩** starts a focus block on it.
+    - **↩** (or a double-click) edits a todo, and **⌘↩** starts a focus block on it. See **Details** below.
+    - **↩** on a Logbook line shows its details, read-only; ⌘K reopens it to change them.
     - **⌘L** jumps to search.
     - Typing a letter outside the search bar starts a search.
   - **⌘S** (or the button on the Logbook) freezes today's report into `reports/YYYY-MM-DD.md` in the notes folder and copies
@@ -111,6 +114,19 @@ Folders with a live Claude or Codex session, or with a todo, show up on their ow
     unless you edited it, in which case the new one is saved next to it. **✨ Narrate with claude -p** is optional and
     adds a short summary under the facts.
   - While the window is open, titi also has a Dock icon and shows up in ⌘Tab.
+- **Details** (both window views): any todo can carry notes under it.
+  - Editing a todo opens its title in place with a **Details** box under it that grows as you type. **Tab** or **↓**
+    goes into Details, where **↩** is a new line; **↑** on its first line or **⇧Tab** goes back to the title.
+  - **↩** in the title, **⌘↩**, **⌘S**, **esc** or a click on another row saves both. So does leaving the editor any
+    other way: another list, ⌘N, closing the window or quitting. Emptying Details removes them.
+  - A todo with details has a small grey note mark after its text; hover it to read the first lines. The tray shows
+    the mark too but doesn't edit details.
+  - If the details changed in the file (say, in Sublime) while the editor was open, titi writes nothing: the editor
+    now shows the file's version above yours, and saving writes what you see. Leaving the editor without looking
+    saves both versions. If the todo's line itself is gone from its file, what you typed goes to the clipboard.
+  - The report lists titles only: details never go into it, or to `claude -p`.
+  - What you type stays as typed in the window and the quick note: no autocorrect, smart quotes or dashes, so
+    commands like `--force` survive.
 - **Settings** (⌘, or ⚙︎ Settings in the tray's footer) sets the notes folder. **Choose…** moves your notes into the
   folder you pick, after a confirmation that says how many notes move and how many are already there:
   - Everything visible moves: open notes, project folders, `done/`, `removed/` and `reports/`. Hidden items such as
@@ -139,6 +155,18 @@ general_todos/
 ```
 
 Each line is a `- [ ]` todo. A small front-matter block records `filed_under`, `group`, `branch` and `captured_in`.
+A todo's details are the lines indented under it (two spaces, or a tab), down to the next line that starts at the
+left edge:
+
+```
+- [ ] rerun the flaky test
+  fails only on CI, about 1 run in 5
+  suspect: the clock mock
+- [ ] next todo
+```
+
+titi never reads anything into them: a `- [ ]` inside details is plain text, not a sub-todo. Ticking, reopening and
+renaming change only the todo's own line, so its details stay with it in `done/` and come back on reopen.
 Closed lines keep a stamp: `- [x] text ✅ 2026-10-25 14:32` when done, `- [-] text ❌ 2026-10-25 14:32` when removed.
 A line you tick in Sublime has no stamp, so the Logbook lists it under "Date unknown" and it never counts in a day's
 report. A workday runs from 04:00 to 04:00.
@@ -152,7 +180,8 @@ Focus blocks are logged to `~/Library/Application Support/Titi/focus-log.jsonl`.
 
 ## Ground rules
 
-- The Markdown files are the only store. There's no database or sync, and no tags, due dates, priorities or nesting.
+- The Markdown files are the only store. There's no database or sync, and no tags, due dates, priorities or nesting
+  (details are plain text under a todo, not sub-todos).
 - Time comes only from git, sessions and the focus log, never from scheduling.
 - Every view should answer "where was I?" or "what did I do?" at a glance.
 - The report is built deterministically from the files; a model summary is an explicit, optional extra.
